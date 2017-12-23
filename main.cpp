@@ -22,7 +22,7 @@ enum Occupier : uint8_t {
 typedef uint8_t Owner;
 
 // Bytes 2-3 -- helps to progress board state
-typedef uint16_t Counter;
+typedef uint16_t Length;
 
 typedef vector< vector<Square> > Board;
 
@@ -44,6 +44,7 @@ struct GameState {
 
   Board board; // Board state
   vector<int> food_left; // How much food each snake has remaining
+  vector<Coord> heads; // Where the "heads" of the snakes are (so it's quick to move them around)
 };
 
 enum class Move {
@@ -64,6 +65,7 @@ const string Colors[] = {
   "35", // Magenta
   "36", // Cyan
   "37", // White
+  "1;30", // Bright Black
 };
 
 inline Occupier get_occupier(Board const& board, Coord const& c) {
@@ -74,8 +76,8 @@ inline Owner get_owner(Board const& board, Coord const& c) {
   return static_cast<Owner>((board[c.row][c.col] & 0x0000FF00) >> 8);
 }
 
-inline Counter get_counter(Board const& board, Coord const& c) {
-  return static_cast<Counter>((board[c.row][c.col] & 0xFFFF0000) >> 16);
+inline Length get_length(Board const& board, Coord const& c) {
+  return static_cast<Length>((board[c.row][c.col] & 0xFFFF0000) >> 16);
 }
 
 inline void set_occupier(Board& board, Coord const& c, Occupier occ) {
@@ -88,14 +90,18 @@ inline void set_owner(Board& board, Coord const& c, uint8_t owner) {
   board[c.row][c.col] |= owner << 8;
 }
 
-inline void set_counter(Board& board, Coord const& c, uint16_t length) {
+inline void set_length(Board& board, Coord const& c, uint16_t length) {
   board[c.row][c.col] &= 0x0000FFFF;
   board[c.row][c.col] |= length << 16;
   // cout << setw(8) << setfill('0') << hex << board[c.row][c.col] << endl;
 }
 
+string get_color(int idx) {
+  return Colors[idx % 14];
+}
+
 void draw_colored(char c, int color_idx) {
-  cout << "\033[" << Colors[color_idx] << "m" << c << "\033[0m";
+  cout << "\033[" << get_color(color_idx) << "m" << c << "\033[0m";
 }
 
 void draw_board(Board const& board) {
@@ -104,8 +110,8 @@ void draw_board(Board const& board) {
       Coord c(i, j);
       switch (get_occupier(board, c)) {
         case Empty: cout << '_'; break;
-        case Snake: draw_colored('0' + get_counter(board, c), get_owner(board, c)); break;
-        case Food:  cout << '*'; break;
+        case Snake: draw_colored('0' + get_length(board, c), get_owner(board, c)); break;
+        case Food:  draw_colored('*', 1); break;
         default: cout << '?';
       }
     }
@@ -121,14 +127,93 @@ void draw(GameState const& state) {
   draw_board(state.board);
 }
 
+void add_snake(GameState& state, Coord const& c, int length, int food) {
+  int idx = state.heads.size();
+  state.heads.push_back(c);
+  state.food_left.push_back(food);
+  set_occupier(state.board, state.heads[idx], Snake);
+  set_length(state.board, state.heads[idx], length);
+}
+
+void stepdown_length(Board& board) {
+  for (int i = 0; i < board.size(); ++i) {
+    for (int j = 0; j < board[i].size(); ++j) {
+      Coord c(i,j);
+      auto val = get_length(board, c);
+      if (val > 0) {
+        set_length(board, c, val - 1);
+        if (val == 1) {
+          set_occupier(board, c, Empty);
+        }
+      }
+    }
+  }
+}
+
+void stepdown_food(GameState& state) {
+  for (int i = 0; i < state.food_left.size(); ++i) {
+    state.food_left[i]--;
+  }
+}
+
+Coord rel_coord(Coord const& in, Move dir) {
+  switch (dir) {
+    case Move::Up:    return Coord(in.row - 1, in.col);
+    case Move::Down:  return Coord(in.row + 1, in.col);
+    case Move::Left:  return Coord(in.row, in.col - 1);
+    case Move::Right: return Coord(in.row, in.col + 1);
+  }
+}
+
+// TODO: Deal with collisions, starvation, etc. (all game logic!)
+// TODO: When do you die of starvation? If you have no food at start of move or end?
+GameState run_moves(GameState const& in, vector<Move> const& moves) {
+  GameState out = in;
+
+  for (int i = 0; i < moves.size(); ++i) {
+    auto to = rel_coord(in.heads[i], moves[i]);
+    set_occupier(out.board, to, Snake);
+    set_owner(out.board, to, i);
+    set_length(out.board, to, get_length(out.board, in.heads[i]) + 1);
+    out.heads[i] = to;
+  }
+
+  stepdown_length(out.board);
+  stepdown_food(out);
+
+  return out;
+}
+
+GameState random_step(GameState const& in) {
+  return run_moves(in, { Move::Down });
+}
+
 int main(int argc, const char* argv[]) {
   auto state = GameState(ROWS, COLS);
-  state.food_left.resize(1);
-  state.food_left[0] = 10;
-  set_occupier(state.board, Coord(0, 0), Snake);
-  set_counter(state.board, Coord(0, 0), 3);
+  add_snake(state, Coord(0,0), 3, 100);
   set_occupier(state.board, Coord(5, 8), Food);
+
   draw(state);
 
-  return -1;
+  state = random_step(state);
+
+  draw(state);
+
+  state = random_step(state);
+
+  draw(state);
+
+  state = random_step(state);
+
+  draw(state);
+
+  state = random_step(state);
+
+  draw(state);
+
+  state = random_step(state);
+
+  draw(state);
+
+  return 0;
 }
