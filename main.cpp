@@ -1,5 +1,7 @@
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
+#include <string>
 #include <vector>
 
 using namespace std;
@@ -22,64 +24,111 @@ typedef uint8_t Owner;
 // Bytes 2-3 -- helps to progress board state
 typedef uint16_t Counter;
 
-typedef vector< vector<Square> > GameState;
+typedef vector< vector<Square> > Board;
+
+struct Coord {
+  Coord() {}
+  Coord(int r, int c) : row(r), col(c) {}
+
+  int row;
+  int col;
+};
+
+struct GameState {
+  GameState(int rows, int cols) {
+    board.resize(rows);
+    for (int i = 0; i < cols; ++i) {
+      board[i] = vector<Square>(cols);
+    }
+  }
+
+  Board board; // Board state
+  vector<int> food_left; // How much food each snake has remaining
+};
 
 enum class Move {
   Up, Down, Left, Right
 };
 
-inline Occupier get_occupier(GameState const& state, int i, int j) {
-  return static_cast<Occupier>(state[i][j] & 0x000F);
+const string Colors[] = {
+  "1;31", // Bright Red
+  "1;32", // Bright Green
+  "1;33", // Bright Yellow
+  "1;34", // Bright Blue
+  "1;35", // Bright Magenta
+  "1;36", // Bright Cyan
+  "31", // Red
+  "32", // Green
+  "33", // Yellow
+  "34", // Blue
+  "35", // Magenta
+  "36", // Cyan
+  "37", // White
+};
+
+inline Occupier get_occupier(Board const& board, Coord const& c) {
+  return static_cast<Occupier>(board[c.row][c.col] & 0x00000FF);
 }
 
-inline Owner get_owner(GameState const& state, int i, int j) {
-  return static_cast<Owner>((state[i][j] & 0x00F0) >> 8);
+inline Owner get_owner(Board const& board, Coord const& c) {
+  return static_cast<Owner>((board[c.row][c.col] & 0x0000FF00) >> 8);
 }
 
-inline Counter get_counter(GameState const& state, int i, int j) {
-  return static_cast<Counter>((state[i][j] & 0xFF00) >> 16);
+inline Counter get_counter(Board const& board, Coord const& c) {
+  return static_cast<Counter>((board[c.row][c.col] & 0xFFFF0000) >> 16);
 }
 
-inline void set_occupier(GameState& state, int i, int j, Occupier occ) {
-  state[i][j] &= 0xFFF0;
-  state[i][j] |= static_cast<uint8_t>(occ);
+inline void set_occupier(Board& board, Coord const& c, Occupier occ) {
+  board[c.row][c.col] &= 0xFFFF0000;
+  board[c.row][c.col] |= static_cast<uint8_t>(occ);
 }
 
-inline void set_owner(GameState& state, int i, int j, uint8_t owner) {
-  state[i][j] &= 0xFF0F;
-  state[i][j] |= owner << 8;
+inline void set_owner(Board& board, Coord const& c, uint8_t owner) {
+  board[c.row][c.col] &= 0xFFFF00FF;
+  board[c.row][c.col] |= owner << 8;
 }
 
-inline void set_counter(GameState& state, int i, int j, uint16_t length) {
-  state[i][j] &= 0x00FF;
-  state[i][j] |= length << 16;
+inline void set_counter(Board& board, Coord const& c, uint16_t length) {
+  board[c.row][c.col] &= 0x0000FFFF;
+  board[c.row][c.col] |= length << 16;
+  // cout << setw(8) << setfill('0') << hex << board[c.row][c.col] << endl;
 }
 
-void draw(GameState const& state) {
-  for (int i = 0; i < state.size(); ++i) {
-    for (int j = 0; j < state[i].size(); ++j) {
-      char c;
-      switch (get_occupier(state, i, j)) {
-        case Empty: c = '_'; break;
-        case Snake: c = '0' + get_owner(state, i, j); break;
-        case Food:  c = '*'; break;
-        default: c = '?';
+void draw_colored(char c, int color_idx) {
+  cout << "\033[" << Colors[color_idx] << "m" << c << "\033[0m";
+}
+
+void draw_board(Board const& board) {
+  for (int i = 0; i < board.size(); ++i) {
+    for (int j = 0; j < board[i].size(); ++j) {
+      Coord c(i, j);
+      switch (get_occupier(board, c)) {
+        case Empty: cout << '_'; break;
+        case Snake: draw_colored('0' + get_counter(board, c), get_owner(board, c)); break;
+        case Food:  cout << '*'; break;
+        default: cout << '?';
       }
-      cout << c;
     }
     cout << endl;
   }
 }
-int main(int argc, const char* argv[]) {
 
-  auto board = GameState();
-  board.resize(ROWS);
-  for (int i = 0; i < COLS; ++i) {
-    board[i] = vector<Square>(COLS);
+void draw(GameState const& state) {
+  for (int i = 0; i < state.food_left.size(); ++i) {
+    cout << i << ": " << state.food_left[i] << " ";
   }
-  set_occupier(board, 0, 0, Snake);
-  set_occupier(board, 5, 8, Food);
-  draw(board);
+  cout << endl;
+  draw_board(state.board);
+}
+
+int main(int argc, const char* argv[]) {
+  auto state = GameState(ROWS, COLS);
+  state.food_left.resize(1);
+  state.food_left[0] = 10;
+  set_occupier(state.board, Coord(0, 0), Snake);
+  set_counter(state.board, Coord(0, 0), 3);
+  set_occupier(state.board, Coord(5, 8), Food);
+  draw(state);
 
   return -1;
 }
