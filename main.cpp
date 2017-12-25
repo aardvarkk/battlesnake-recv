@@ -222,7 +222,10 @@ int main(int argc, const char* argv[]) {
 
 	HttpServer server;
 	server.config.port = 5000;
+
 	server.resource["^/start$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
+//		cout << "START" << endl;
+
 		SimpleWeb::CaseInsensitiveMultimap header;
 		header.emplace("Content-Type", "application/json");
 
@@ -235,8 +238,22 @@ int main(int argc, const char* argv[]) {
 		response->write(SimpleWeb::StatusCode::success_ok, ss, header);
 	};
 
+	server.resource["^/move$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
+//		cout << "MOVE" << endl;
+
+		SimpleWeb::CaseInsensitiveMultimap header;
+		header.emplace("Content-Type", "application/json");
+
+		stringstream ss;
+		ptree json;
+		json.put<string>("move", "down");
+		write_json(ss, json);
+
+		response->write(SimpleWeb::StatusCode::success_ok, ss, header);
+	};
+
 	server.on_error = [](shared_ptr<HttpServer::Request> /*request*/, const SimpleWeb::error_code & /*ec*/) {
-		// Handle errors here
+		cout << "ERROR!!!" << endl;
 	};
 
 	thread server_thread([&server]() {
