@@ -1,8 +1,13 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <string>
 #include <vector>
+
+#include "server_http.hpp"
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
+using namespace boost::property_tree;
+using HttpServer = SimpleWeb::Server<SimpleWeb::HTTP>;
 
 using namespace std;
 
@@ -215,5 +220,31 @@ int main(int argc, const char* argv[]) {
 
   draw(state);
 
-  return 0;
+	HttpServer server;
+	server.config.port = 5000;
+	server.resource["^/start$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
+		SimpleWeb::CaseInsensitiveMultimap header;
+		header.emplace("Content-Type", "application/json");
+
+		stringstream ss;
+		ptree json;
+		json.put<string>("color", "#00ff00");
+		json.put<string>("name", "clifford");
+		write_json(ss, json);
+
+		response->write(SimpleWeb::StatusCode::success_ok, ss, header);
+	};
+
+	server.on_error = [](shared_ptr<HttpServer::Request> /*request*/, const SimpleWeb::error_code & /*ec*/) {
+		// Handle errors here
+	};
+
+	thread server_thread([&server]() {
+		// Start server
+		server.start();
+	});
+
+	server_thread.join();
+
+	return 0;
 }
