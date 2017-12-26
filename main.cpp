@@ -3,13 +3,14 @@
 #include <iostream>
 #include <vector>
 
+using namespace std;
+
 #include "server_http.hpp"
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
-using namespace boost::property_tree;
 using HttpServer = SimpleWeb::Server<SimpleWeb::HTTP>;
 
-using namespace std;
+#include "json.hpp"
+
+using json = nlohmann::json;
 
 const int ROWS = 20;
 const int COLS = 20;
@@ -230,15 +231,7 @@ void simulate() {
 	draw(state);
 }
 
-void send_json(ptree const& json, shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response> &response) {
-	SimpleWeb::CaseInsensitiveMultimap header;
-	header.emplace("Content-Type", "application/json");
-	stringstream ss;
-	write_json(ss, json);
-	response->write(SimpleWeb::StatusCode::success_ok, ss, header);
-}
-
-Move get_move(ptree const& json) {
+Move get_move() {
 	return Move::Right;
 }
 
@@ -248,26 +241,25 @@ void server() {
 
 	server.resource["^/start$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
 		cout << "/start" << endl;
-		ptree json;
-		json.put<string>("color", "#00ff00");
-		json.put<string>("name", "clifford");
-		send_json(json, response);
+
+		auto j_in = json::parse(request->content.string());
+		cout << j_in.dump(2) << endl;
+
+		json j_out;
+		j_out["color"] = "#00ff00";
+		j_out["name"] = "clifford";
+		response->write(SimpleWeb::StatusCode::success_ok, j_out.dump(), { { "Content-Type", "application/json" } });
 	};
 
 	server.resource["^/move$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
 		cout << "/move" << endl;
 
-//		string method, path, query_string, version;
-//		SimpleWeb::CaseInsensitiveMultimap header;
-//		SimpleWeb::RequestMessage::parse(request->content, method, path, query_string, version, header);
+		auto j_in = json::parse(request->content.string());
+		cout << j_in.dump(2) << endl;
 
-		ptree json_in;
-		read_json(request->content, json_in);
-		print_ptree(json_in);
-
-		ptree json_out;
-		json_out.put<string>("move", move_str(get_move(json_in)));
-		send_json(json_out, response);
+		json j_out;
+		j_out["move"] = move_str(get_move());
+		response->write(SimpleWeb::StatusCode::success_ok, j_out.dump(), { { "Content-Type", "application/json" } });
 	};
 
 	server.on_error = [](shared_ptr<HttpServer::Request> /*request*/, SimpleWeb::error_code const& ec) {
