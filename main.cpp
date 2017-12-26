@@ -257,9 +257,13 @@ void server() {
 	server.resource["^/move$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
 		cout << "/move" << endl;
 
-		cout << request->content.string() << endl;
+//		string method, path, query_string, version;
+//		SimpleWeb::CaseInsensitiveMultimap header;
+//		SimpleWeb::RequestMessage::parse(request->content, method, path, query_string, version, header);
+
 		ptree json_in;
 		read_json(request->content, json_in);
+		print_ptree(json_in);
 
 		ptree json_out;
 		json_out.put<string>("move", move_str(get_move(json_in)));
