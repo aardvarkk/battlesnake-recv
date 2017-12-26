@@ -170,6 +170,15 @@ Coord rel_coord(Coord const& in, Move dir) {
   }
 }
 
+inline string move_str(Move const& dir) {
+	switch (dir) {
+		case Move::Up:    return "up";
+		case Move::Down:  return "down";
+		case Move::Left:  return "left";
+		case Move::Right: return "right";
+	}
+}
+
 // TODO: Deal with collisions, starvation, etc. (all game logic!)
 // TODO: When do you die of starvation? If you have no food at start of move or end?
 GameState run_moves(GameState const& in, vector<Move> const& moves) {
@@ -193,75 +202,82 @@ GameState random_step(GameState const& in) {
   return run_moves(in, { Move::Down });
 }
 
-int main(int argc, const char* argv[]) {
-  auto state = GameState(ROWS, COLS);
-  add_snake(state, Coord(0,0), 3, 100);
-  set_occupier(state.board, Coord(5, 8), Food);
+void simulate() {
+	auto state = GameState(ROWS, COLS);
+	add_snake(state, Coord(0,0), 3, 100);
+	set_occupier(state.board, Coord(5, 8), Food);
 
-  draw(state);
+	draw(state);
 
-  state = random_step(state);
+	state = random_step(state);
 
-  draw(state);
+	draw(state);
 
-  state = random_step(state);
+	state = random_step(state);
 
-  draw(state);
+	draw(state);
 
-  state = random_step(state);
+	state = random_step(state);
 
-  draw(state);
+	draw(state);
 
-  state = random_step(state);
+	state = random_step(state);
 
-  draw(state);
+	draw(state);
 
-  state = random_step(state);
+	state = random_step(state);
 
-  draw(state);
+	draw(state);
+}
 
+void send_json(ptree const& json, shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response> &response) {
+	SimpleWeb::CaseInsensitiveMultimap header;
+	header.emplace("Content-Type", "application/json");
+	stringstream ss;
+	write_json(ss, json);
+	response->write(SimpleWeb::StatusCode::success_ok, ss, header);
+}
+
+Move get_move(ptree const& json) {
+	return Move::Right;
+}
+
+void server() {
 	HttpServer server;
 	server.config.port = 5000;
 
 	server.resource["^/start$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
-//		cout << "START" << endl;
-
-		SimpleWeb::CaseInsensitiveMultimap header;
-		header.emplace("Content-Type", "application/json");
-
-		stringstream ss;
+		cout << "/start" << endl;
 		ptree json;
 		json.put<string>("color", "#00ff00");
 		json.put<string>("name", "clifford");
-		write_json(ss, json);
-
-		response->write(SimpleWeb::StatusCode::success_ok, ss, header);
+		send_json(json, response);
 	};
 
 	server.resource["^/move$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
-//		cout << "MOVE" << endl;
+		cout << "/move" << endl;
 
-		SimpleWeb::CaseInsensitiveMultimap header;
-		header.emplace("Content-Type", "application/json");
+		cout << request->content.string() << endl;
+		ptree json_in;
+		read_json(request->content, json_in);
 
-		stringstream ss;
-		ptree json;
-		json.put<string>("move", "down");
-		write_json(ss, json);
-
-		response->write(SimpleWeb::StatusCode::success_ok, ss, header);
+		ptree json_out;
+		json_out.put<string>("move", move_str(get_move(json_in)));
+		send_json(json_out, response);
 	};
 
-	server.on_error = [](shared_ptr<HttpServer::Request> /*request*/, const SimpleWeb::error_code & /*ec*/) {
-		cout << "ERROR!!!" << endl;
+	server.on_error = [](shared_ptr<HttpServer::Request> /*request*/, SimpleWeb::error_code const& ec) {
+		cout << "Error: "  << ec.message() << endl;
 	};
 
 	thread server_thread([&server]() {
-		// Start server
 		server.start();
 	});
 
 	server_thread.join();
+}
 
+int main(int argc, const char* argv[]) {
+	server();
 	return 0;
 }
