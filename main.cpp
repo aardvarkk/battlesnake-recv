@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <random>
+#include <set>
 #include <vector>
 
 using namespace std;
@@ -12,15 +15,15 @@ using HttpServer = SimpleWeb::Server<SimpleWeb::HTTP>;
 
 using json = nlohmann::json;
 
-const int ROWS = 20;
-const int COLS = 20;
+const int SIM_ROWS = 20;
+const int SIM_COLS = 20;
 
 typedef int Square;
 
 // Byte 0 -- what occupies a space
 enum Occupier : uint8_t {
   Empty   =  0,
-  Snake   = +1,
+  Player  = +1,
   Food    = +2
 };
 
@@ -35,27 +38,45 @@ typedef vector< vector<Square> > Board;
 struct Coord {
   Coord() {}
   Coord(int r, int c) : row(r), col(c) {}
+	bool operator==(Coord const& other) const {
+		return this->row == other.row && this->col == other.col;
+	}
 
   int row;
   int col;
 };
 
+struct Snake {
+	vector<Coord> coords;
+	int health_points; // How much food each snake has remaining
+	string id;
+	Coord head() const { return coords.front(); }
+};
+
 struct GameState {
-  GameState(int rows, int cols) {
+	GameState() : rows(0), cols(0) {}
+  GameState(int rows, int cols) : rows(rows), cols(cols) {
     board.resize(rows);
     for (int i = 0; i < cols; ++i) {
       board[i] = vector<Square>(cols);
     }
   }
 
+	int rows, cols;
   Board board; // Board state
-  vector<int> food_left; // How much food each snake has remaining
-  vector<Coord> heads; // Where the "heads" of the snakes are (so it's quick to move them around)
+	string me;
+	vector<Snake> snakes;
 };
 
+typedef map<string, GameState> GameStates;
+
+GameStates _states;
+default_random_engine _rng;
+
 enum class Move {
-  Up, Down, Left, Right
+  Up, Down, Left, Right, None
 };
+typedef set<Move> Moves;
 
 const string Colors[] = {
   "1;31", // Bright Red
@@ -115,9 +136,9 @@ void draw_board(Board const& board) {
     for (int j = 0; j < board[i].size(); ++j) {
       Coord c(i, j);
       switch (get_occupier(board, c)) {
-        case Empty: cout << '_'; break;
-        case Snake: draw_colored('0' + get_length(board, c), get_owner(board, c)); break;
-        case Food:  draw_colored('*', 1); break;
+        case Empty:  cout << '_'; break;
+        case Player: draw_colored('0' + get_length(board, c), get_owner(board, c)); break;
+        case Food:   draw_colored('*', 1); break;
         default: cout << '?';
       }
     }
@@ -126,19 +147,19 @@ void draw_board(Board const& board) {
 }
 
 void draw(GameState const& state) {
-  for (int i = 0; i < state.food_left.size(); ++i) {
-    cout << i << ": " << state.food_left[i] << " ";
-  }
+//  for (int i = 0; i < state.food_left.size(); ++i) {
+//    cout << i << ": " << state.food_left[i] << " ";
+//  }
   cout << endl;
   draw_board(state.board);
 }
 
 void add_snake(GameState& state, Coord const& c, int length, int food) {
-  int idx = state.heads.size();
-  state.heads.push_back(c);
-  state.food_left.push_back(food);
-  set_occupier(state.board, state.heads[idx], Snake);
-  set_length(state.board, state.heads[idx], length);
+//  int idx = state.heads.size();
+//  state.heads.push_back(c);
+//  state.food_left.push_back(food);
+//  set_occupier(state.board, state.heads[idx], Snake);
+//  set_length(state.board, state.heads[idx], length);
 }
 
 void stepdown_length(Board& board) {
@@ -157,9 +178,9 @@ void stepdown_length(Board& board) {
 }
 
 void stepdown_food(GameState& state) {
-  for (int i = 0; i < state.food_left.size(); ++i) {
-    state.food_left[i]--;
-  }
+//  for (int i = 0; i < state.food_left.size(); ++i) {
+//    state.food_left[i]--;
+//  }
 }
 
 Coord rel_coord(Coord const& in, Move dir) {
@@ -168,6 +189,7 @@ Coord rel_coord(Coord const& in, Move dir) {
     case Move::Down:  return Coord(in.row + 1, in.col);
     case Move::Left:  return Coord(in.row, in.col - 1);
     case Move::Right: return Coord(in.row, in.col + 1);
+		case Move::None:  return Coord(in.row, in.col);
   }
 }
 
@@ -177,6 +199,7 @@ inline string move_str(Move const& dir) {
 		case Move::Down:  return "down";
 		case Move::Left:  return "left";
 		case Move::Right: return "right";
+		case Move::None:  return "none"; // only used for certain death
 	}
 }
 
@@ -185,13 +208,13 @@ inline string move_str(Move const& dir) {
 GameState run_moves(GameState const& in, vector<Move> const& moves) {
   GameState out = in;
 
-  for (int i = 0; i < moves.size(); ++i) {
-    auto to = rel_coord(in.heads[i], moves[i]);
-    set_occupier(out.board, to, Snake);
-    set_owner(out.board, to, i);
-    set_length(out.board, to, get_length(out.board, in.heads[i]) + 1);
-    out.heads[i] = to;
-  }
+//  for (int i = 0; i < moves.size(); ++i) {
+//    auto to = rel_coord(in.heads[i], moves[i]);
+//    set_occupier(out.board, to, Snake);
+//    set_owner(out.board, to, i);
+//    set_length(out.board, to, get_length(out.board, in.heads[i]) + 1);
+//    out.heads[i] = to;
+//  }
 
   stepdown_length(out.board);
   stepdown_food(out);
@@ -204,7 +227,7 @@ GameState random_step(GameState const& in) {
 }
 
 void simulate() {
-	auto state = GameState(ROWS, COLS);
+	auto state = GameState(SIM_ROWS, SIM_COLS);
 	add_snake(state, Coord(0,0), 3, 100);
 	set_occupier(state.board, Coord(5, 8), Food);
 
@@ -231,8 +254,80 @@ void simulate() {
 	draw(state);
 }
 
-Move get_move() {
-	return Move::Right;
+Snake get_snake(GameState const& state, string const& id) {
+	for (auto const& s : state.snakes) {
+		if (s.id == id) return s;
+	}
+	return Snake();
+}
+
+void filter_losing_collisions(GameState const& state, Moves& moves) {
+	auto const& me = get_snake(state, state.me);
+
+	// Don't go off edges
+	if (me.head().row <= 0) moves.erase(Move::Up);
+	if (me.head().col <= 0) moves.erase(Move::Left);
+	if (me.head().row >= state.rows - 1) moves.erase(Move::Down);
+	if (me.head().col >= state.cols - 1) moves.erase(Move::Right);
+
+	// Don't collide with self
+	for (auto const& body : me.coords) {
+		if (body == rel_coord(me.head(), Move::Up)) moves.erase(Move::Up);
+		if (body == rel_coord(me.head(), Move::Left)) moves.erase(Move::Left);
+		if (body == rel_coord(me.head(), Move::Down)) moves.erase(Move::Down);
+		if (body == rel_coord(me.head(), Move::Right)) moves.erase(Move::Right);
+	}
+}
+
+Move get_move(GameState const& state, string& taunt) {
+	// Start by considering all possible moves
+	Moves moves = { Move::Up, Move::Down, Move::Left, Move::Right };
+
+	// Remove any moves that would cause us to collide (and lose)
+	// Walls, snake sides, and longer snake heads
+	filter_losing_collisions(state, moves);
+
+	// If we don't have any, we're boned!
+	if (moves.empty()) {
+		taunt = "Arghhh!";
+		return Move::None;
+	}
+	// We only have one possible move, so do it
+	else if (moves.size() == 1) {
+		taunt = "You leave me no choice...";
+		return *moves.begin();
+	}
+	// We have a list of moves to choose from... for now choose randomly
+	else {
+		taunt = "Let's get freaky!";
+		vector<Move> rmoves;
+		for (auto move : moves) rmoves.push_back(move);
+		shuffle(rmoves.begin(), rmoves.end(), _rng);
+		return *rmoves.begin();
+	}
+}
+
+Snake process_snake(json const& j) {
+	Snake s;
+	for (auto c : j.at("coords")) {
+		s.coords.push_back(Coord(c.at(1), c.at(0)));
+	}
+	s.health_points = j.at("health_points");
+	s.id = j.at("id");
+	return s;
+}
+
+GameState process_state(json const& j) {
+	if (!_states.count(j.at("game_id"))) throw exception();
+	GameState state = _states.at(j.at("game_id"));
+
+	state.snakes.clear();
+	for (auto const& s : j.at("snakes")) {
+		state.snakes.push_back(process_snake(s));
+	}
+	state.me = j.at("you");
+
+	return state;
 }
 
 void server() {
@@ -244,6 +339,8 @@ void server() {
 
 		auto j_in = json::parse(request->content.string());
 		cout << j_in.dump(2) << endl;
+
+		_states[j_in.at("game_id")] = GameState(j_in.at("height"), j_in.at("width"));
 
 		json j_out;
 		j_out["color"] = "#00ff00";
@@ -257,8 +354,12 @@ void server() {
 		auto j_in = json::parse(request->content.string());
 		cout << j_in.dump(2) << endl;
 
+		auto state = process_state(j_in);
+
 		json j_out;
-		j_out["move"] = move_str(get_move());
+		string taunt;
+		j_out["move"] = move_str(get_move(state, taunt));
+		j_out["taunt"] = taunt;
 		response->write(SimpleWeb::StatusCode::success_ok, j_out.dump(), { { "Content-Type", "application/json" } });
 	};
 
