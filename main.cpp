@@ -51,6 +51,8 @@ struct Snake {
 	int health_points; // How much food each snake has remaining
 	string id;
 	Coord head() const { return coords.front(); }
+	Coord tail() const { return coords.back(); }
+	bool single_tail() const { return !(coords.back() == *(coords.end()-1)); } // Tail can stack at the start
 };
 
 struct GameState {
@@ -66,6 +68,7 @@ struct GameState {
   Board board; // Board state
 	string me;
 	vector<Snake> snakes;
+	vector<Coord> food;
 };
 
 typedef map<string, GameState> GameStates;
@@ -261,7 +264,7 @@ Snake get_snake(GameState const& state, string const& id) {
 	return Snake();
 }
 
-void filter_losing_collisions(GameState const& state, Moves& moves) {
+void filter_wall_collisions(GameState const& state, Moves& moves) {
 	auto const& me = get_snake(state, state.me);
 
 	// Don't go off edges
@@ -269,9 +272,22 @@ void filter_losing_collisions(GameState const& state, Moves& moves) {
 	if (me.head().col <= 0) moves.erase(Move::Left);
 	if (me.head().row >= state.rows - 1) moves.erase(Move::Down);
 	if (me.head().col >= state.cols - 1) moves.erase(Move::Right);
+}
+
+void filter_self_collisions(GameState const& state, Moves& moves) {
+	auto const& me = get_snake(state, state.me);
 
 	// Don't collide with self
 	for (auto const& body : me.coords) {
+		// Tail is a special case...
+		// If we're not about to eat food, it's OK to "collide" with the tail
+		// because it's going to MOVE by the next frame!
+		// Note that we only ignore our tail if it's a "single tail" (not a "stacked tail")
+		// At this point we assume it's OK to hit our own tail
+		// but we'll do a check later to filter it out if we're about to get food
+		if (body == me.tail() && me.single_tail()) continue;
+
+		// Check collisions with our own body (other than the tail)
 		if (body == rel_coord(me.head(), Move::Up)) moves.erase(Move::Up);
 		if (body == rel_coord(me.head(), Move::Left)) moves.erase(Move::Left);
 		if (body == rel_coord(me.head(), Move::Down)) moves.erase(Move::Down);
@@ -279,18 +295,73 @@ void filter_losing_collisions(GameState const& state, Moves& moves) {
 	}
 }
 
+inline int taxicab_dist(Coord const& a, Coord const& b) {
+	return abs(a.row - b.row) + abs(a.col - b.col);
+}
+
+// Distance from any coordinate to food (in units of "number of moves")
+// TODO: We can't use this "ideal" distance to food because there may not be an actual path of that distance
+// Other snakes can cut us off so that we can't reach the food as soon as we expect
+int min_dist_to_food(Coord const& c, GameState const& state) {
+	int min_dist = INT_MAX;
+	for (auto const& f : state.food) {
+		min_dist = min(min_dist, taxicab_dist(c, f));
+	}
+	return min_dist;
+}
+
+// Don't allow a move that would take us farther away from food than our remaining health points allow
+// If our current position + proposed move is greater distance from food than our health points, eliminate it
+void filter_starvation(GameState const& state, Moves& moves) {
+	auto const& me = get_snake(state, state.me);
+
+	if (min_dist_to_food(rel_coord(me.head(), Move::Up),    state) >= me.health_points) moves.erase(Move::Up);
+	if (min_dist_to_food(rel_coord(me.head(), Move::Left),  state) >= me.health_points) moves.erase(Move::Left);
+	if (min_dist_to_food(rel_coord(me.head(), Move::Down),  state) >= me.health_points) moves.erase(Move::Down);
+	if (min_dist_to_food(rel_coord(me.head(), Move::Right), state) >= me.health_points) moves.erase(Move::Right);
+}
+
 Move get_move(GameState const& state, string& taunt) {
 	// Start by considering all possible moves
 	Moves moves = { Move::Up, Move::Down, Move::Left, Move::Right };
 
-	// Remove any moves that would cause us to collide (and lose)
-	// Walls, snake sides, and longer snake heads
-	filter_losing_collisions(state, moves);
+	// Remove any moves that would cause us a guaranteed loss (wall collisions and self collisions)
+	filter_wall_collisions(state, moves);
+	filter_self_collisions(state, moves);
 
-	// If we don't have any, we're boned!
+	// Any move we make is death!
 	if (moves.empty()) {
 		taunt = "Arghhh!";
 		return Move::None;
+	}
+
+	// Get a copy of our options pre-rough-stuff
+	// We can fall back to it if we have no other option
+	Moves pre = moves;
+
+	// TODO: Strongly avoid going down any paths that will lead to certain death
+	// (we can wind into ourselves and not have a way out from our own trap)
+	// How? We want to guarantee we have at least as many moves as our own length (+ any length gained by food)
+	// or we don't go that way
+
+	// Strongly avoid any collisions with other snake sides
+	// (basically guaranteed loss unless they also collide in the same frame)
+	// TODO: Don't collide with other snake sides and longer snake heads
+
+	// Strongly prefer to not move farther away from food than our health allows,
+	// but we can hope that another snake eats food and the new food regenerates closer to us
+	filter_starvation(state, moves);
+
+	// TODO: If we're about to get food, don't allow us to go into our tail spot... but that would imply
+	// that the food is ON our tail (which is impossible), so I don't think we need to worry about this case!
+
+	// We have no good options (very likely to die, but tiny chance of something else...)
+	if (moves.empty()) {
+		taunt = "Here goes nothing!";
+		vector<Move> rmoves;
+		for (auto move : pre) rmoves.push_back(move);
+		shuffle(rmoves.begin(), rmoves.end(), _rng);
+		return *rmoves.begin();
 	}
 	// We only have one possible move, so do it
 	else if (moves.size() == 1) {
@@ -320,6 +391,10 @@ Snake process_snake(json const& j) {
 GameState process_state(json const& j) {
 	if (!_states.count(j.at("game_id"))) throw exception();
 	GameState state = _states.at(j.at("game_id"));
+
+	for (auto const& f : j.at("food")) {
+		state.food.push_back(Coord(f.at(1), f.at(0)));
+	}
 
 	state.snakes.clear();
 	for (auto const& s : j.at("snakes")) {
@@ -361,10 +436,14 @@ void server() {
 		j_out["move"] = move_str(get_move(state, taunt));
 		j_out["taunt"] = taunt;
 		response->write(SimpleWeb::StatusCode::success_ok, j_out.dump(), { { "Content-Type", "application/json" } });
+
+		cout << "output" << endl;
+		cout << j_out.dump() << endl;
 	};
 
-	server.on_error = [](shared_ptr<HttpServer::Request> /*request*/, SimpleWeb::error_code const& ec) {
-		cout << "Error: "  << ec.message() << endl;
+	server.on_error = [](shared_ptr<HttpServer::Request> request, SimpleWeb::error_code const& ec) {
+		cout << "Error "  << ec.value() << ": " << ec.message() << endl;
+		cout << request->content.string() << endl;
 	};
 
 	thread server_thread([&server]() {
