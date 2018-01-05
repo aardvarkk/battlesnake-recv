@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <deque>
 #include <random>
 #include <set>
 
@@ -326,42 +327,55 @@ bool in_bounds(Coord const& a, GameState const& state) {
 	return true;
 }
 
-// Measures distance by marking sections of the game board as Visited
-int turn_dist(Coord const& src, Coord const& dst, GameState& state, int dist) {
-	if (src == dst) return dist;
-
-	// To send into next calls
-	auto next_state = state;
-
-	// Mark our current location as used
-	set_flag(next_state.board, src, OccupierFlag::Visited);
-
-	// Step down the board to account for tail movement
-	stepdown_length(next_state.board);
-
-	// Check all possible next moves
-	int min_dist = INT_MAX;
-	Move min_move;
-
+void add_unvisited_children(Coord const& c, GameState& state, deque<Coord>& children) {
 	for (auto const& m : AllMoves) {
-		auto next_coord = rel_coord(src, m);
-		if (!in_bounds(next_coord, next_state)) continue;
-		if (get_flag(next_state.board, next_coord, OccupierFlag::Visited)) continue;
-		int this_dist = turn_dist(next_coord, dst, next_state, dist+1);
-		if (this_dist < min_dist) {
-			min_dist = this_dist;
-			min_move = m;
+		auto child = rel_coord(c, m);
+		if (!in_bounds(child, state)) continue;
+		if (get_flag(state.board, child, OccupierFlag::Visited)) continue;
+		set_flag(state.board, child, OccupierFlag::Visited);
+		children.push_back(child);
+	}
+}
+// Measures distance by marking sections of the game board as Visited
+int turn_dist(Coord const& src, Coord const& dst, GameState const& const_state) {
+	if (!in_bounds(src, const_state)) return INT_MAX;
+	if (!in_bounds(dst, const_state)) return INT_MAX;
+
+	int dist = 0;
+	auto state = const_state;
+
+	deque<Coord> unvisited;
+	unvisited.push_back(src);
+	set_flag(state.board, src, OccupierFlag::Visited);
+
+	// Process all of our immediate children
+	// Add all of their children during processing
+	// If we don't make it to the destination in this run, go out "one turn"
+	while (!unvisited.empty()) {
+
+		// Holder for "next round"
+		deque<Coord> children;
+
+		// Go through all the coords at the current level and check them
+		while (!unvisited.empty()) {
+			auto c = unvisited.front();
+			unvisited.pop_front();
+
+			add_unvisited_children(c, state, children);
+
+			if (c == dst) {
+				cout << "Turn distance from " << src << " to " << dst << " is " << dist << endl;
+				return dist;
+			}
 		}
+
+		unvisited = children;
+		++dist;
 	}
 
-	//
-	if (min_dist != INT_MAX) {
-		cout << "Turn distance from " << src << " to " << dst << " is " << min_dist;
-		return min_dist;
-	} else {
-		// We weren't able to reach the destination in this move
-		return INT_MAX;
-	}
+	// Unreachable!
+	cout << dst << " is unreachable from " << src << endl;
+	return INT_MAX;
 }
 
 // Distance from any coordinate to food (in units of "number of moves")
@@ -371,7 +385,7 @@ int min_dist_to_food(Coord const& c, GameState const& state) {
 	int min_dist = INT_MAX;
 	for (auto const& f : state.food) {
 //		min_dist = min(min_dist, taxicab_dist(c, f));
-		min_dist = min(min_dist, turn_dist(c, f, state, 0));
+		min_dist = min(min_dist, turn_dist(c, f, state));
 	}
 	return min_dist;
 }
@@ -381,10 +395,14 @@ int min_dist_to_food(Coord const& c, GameState const& state) {
 void filter_starvation(GameState const& state, Moves& moves) {
 	auto const& me = get_snake(state, state.me);
 
-	if (min_dist_to_food(rel_coord(me.head(), Move::Up),    state) >= me.health_points) moves.erase(Move::Up);
-	if (min_dist_to_food(rel_coord(me.head(), Move::Left),  state) >= me.health_points) moves.erase(Move::Left);
-	if (min_dist_to_food(rel_coord(me.head(), Move::Down),  state) >= me.health_points) moves.erase(Move::Down);
-	if (min_dist_to_food(rel_coord(me.head(), Move::Right), state) >= me.health_points) moves.erase(Move::Right);
+	Moves filtered;
+	for (auto const& m : moves) {
+		if (min_dist_to_food(rel_coord(me.head(), m), state) < me.health_points) {
+			filtered.insert(m);
+		}
+	}
+
+	moves = filtered;
 }
 
 Move get_move(GameState const& state, string& taunt) {
@@ -515,7 +533,7 @@ void server(int port) {
 		res.body = j_out.dump();
 
 //		cout << "output" << endl;
-//		cout << j_out.dump() << endl;
+		cout << j_out.dump() << endl;
 
 		auto end = chrono::high_resolution_clock::now();
 
