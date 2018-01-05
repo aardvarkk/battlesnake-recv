@@ -5,6 +5,10 @@
 #include <random>
 #include <set>
 
+// CASES TO FIX:
+// We won't "stall" to get our tail to move out of the way.
+// We'll start making random-ish moves because we THINK we're going to starve (can't get through our own body)
+// but if we STALL long enough we actually could get back out
 using namespace std;
 
 #include "httplib.h"
@@ -26,11 +30,11 @@ public:
 	static const uint8_t Visited = 1 << 2;
 };
 
-// Byte 1 -- we are owner 0
+// Byte 1 -- by index in snakes
 typedef uint8_t Owner;
 
 // Bytes 2-3 -- helps to progress board state
-typedef uint16_t Length;
+typedef uint16_t Counter;
 
 typedef vector< vector<Square> > Board;
 
@@ -115,8 +119,8 @@ inline Owner get_owner(Board const& board, Coord const& c) {
   return static_cast<Owner>((board[c.row][c.col] & 0x0000FF00) >> 8);
 }
 
-inline Length get_length(Board const& board, Coord const& c) {
-  return static_cast<Length>((board[c.row][c.col] & 0xFFFF0000) >> 16);
+inline Counter get_counter(Board const& board, Coord const& c) {
+  return static_cast<Counter>((board[c.row][c.col] & 0xFFFF0000) >> 16);
 }
 
 inline bool is_empty(Board& board, Coord const& c) {
@@ -140,9 +144,9 @@ inline void set_owner(Board& board, Coord const& c, uint8_t owner) {
   board[c.row][c.col] |= owner << 8;
 }
 
-inline void set_length(Board& board, Coord const& c, uint16_t length) {
+inline void set_counter(Board& board, Coord const& c, uint16_t counter) {
   board[c.row][c.col] &= 0x0000FFFF;
-  board[c.row][c.col] |= length << 16;
+  board[c.row][c.col] |= counter << 16;
   // cout << setw(8) << setfill('0') << hex << board[c.row][c.col] << endl;
 }
 
@@ -160,7 +164,7 @@ void draw_board(Board const& board) {
       Coord c(i, j);
       switch (0 /*get_occupier(board, c)*/) {
 //        case Empty:  cout << '_'; break;
-//        case Player: draw_colored('0' + get_length(board, c), get_owner(board, c)); break;
+//        case Player: draw_colored('0' + get_counter(board, c), get_owner(board, c)); break;
 //        case Food:   draw_colored('*', 1); break;
         default: cout << '?';
       }
@@ -182,16 +186,16 @@ void add_snake(GameState& state, Coord const& c, int length, int food) {
 //  state.heads.push_back(c);
 //  state.food_left.push_back(food);
 //  set_occupier(state.board, state.heads[idx], Snake);
-//  set_length(state.board, state.heads[idx], length);
+//  set_counter(state.board, state.heads[idx], counter);
 }
 
-void stepdown_length(Board& board) {
+void stepdown_counter(Board& board) {
   for (int i = 0; i < board.size(); ++i) {
     for (int j = 0; j < board[i].size(); ++j) {
       Coord c(i,j);
-      auto val = get_length(board, c);
+      auto val = get_counter(board, c);
       if (val > 0) {
-        set_length(board, c, val - 1);
+        set_counter(board, c, val - 1);
         if (val == 1) {
           clear_flag(board, c, OccupierFlag::Player);
         }
@@ -235,11 +239,11 @@ GameState run_moves(GameState const& in, vector<Move> const& moves) {
 //    auto to = rel_coord(in.heads[i], moves[i]);
 //    set_occupier(out.board, to, Snake);
 //    set_owner(out.board, to, i);
-//    set_length(out.board, to, get_length(out.board, in.heads[i]) + 1);
+//    set_counter(out.board, to, get_counter(out.board, in.heads[i]) + 1);
 //    out.heads[i] = to;
 //  }
 
-  stepdown_length(out.board);
+  stepdown_counter(out.board);
   stepdown_food(out);
 
   return out;
@@ -327,11 +331,15 @@ bool in_bounds(Coord const& a, GameState const& state) {
 	return true;
 }
 
-void add_unvisited_children(Coord const& c, GameState& state, deque<Coord>& children) {
+// Valid children are:
+// 1. Not already visited
+// 2. Not occupied by a player
+void add_valid_children(Coord const& c, GameState& state, deque<Coord>& children) {
 	for (auto const& m : AllMoves) {
 		auto child = rel_coord(c, m);
 		if (!in_bounds(child, state)) continue;
 		if (get_flag(state.board, child, OccupierFlag::Visited)) continue;
+		if (get_flag(state.board, child, OccupierFlag::Player))  continue;
 		set_flag(state.board, child, OccupierFlag::Visited);
 		children.push_back(child);
 	}
@@ -361,7 +369,7 @@ int turn_dist(Coord const& src, Coord const& dst, GameState const& const_state) 
 			auto c = unvisited.front();
 			unvisited.pop_front();
 
-			add_unvisited_children(c, state, children);
+			add_valid_children(c, state, children);
 
 			if (c == dst) {
 				cout << "Turn distance from " << src << " to " << dst << " is " << dist << endl;
@@ -371,6 +379,9 @@ int turn_dist(Coord const& src, Coord const& dst, GameState const& const_state) 
 
 		unvisited = children;
 		++dist;
+
+		// As we move out our tail will move so we can access more stuff
+		stepdown_counter(state.board);
 	}
 
 	// Unreachable!
@@ -462,14 +473,24 @@ Move get_move(GameState const& state, string& taunt) {
 	}
 }
 
-Snake process_snake(json const& j) {
+void process_snake(json const& j, GameState& state) {
 	Snake s;
-	for (auto c : j.at("coords")) {
-		s.coords.push_back(Coord(c.at(1), c.at(0)));
+
+	for (auto jc : j.at("coords")) {
+		Coord c(jc.at(1), jc.at(0));
+		s.coords.push_back(c);
+		set_flag(state.board, c, OccupierFlag::Player);
 	}
+
+	// Set counter in reverse so head has max value
+	int ctr = 0;
+	for (auto it = s.coords.rbegin(); it != s.coords.rend(); ++it) {
+		set_counter(state.board, *it, ++ctr);
+	}
+
 	s.health_points = j.at("health_points");
 	s.id = j.at("id");
-	return s;
+	state.snakes.push_back(s);
 }
 
 GameState process_state(json const& j) {
@@ -482,7 +503,7 @@ GameState process_state(json const& j) {
 
 	state.snakes.clear();
 	for (auto const& s : j.at("snakes")) {
-		state.snakes.push_back(process_snake(s));
+		process_snake(s, state);
 	}
 	state.me = j.at("you");
 
