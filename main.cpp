@@ -1,18 +1,15 @@
 #include <algorithm>
-#include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <random>
 #include <set>
-#include <vector>
 
 using namespace std;
 
-#include "server_http.hpp"
-using HttpServer = SimpleWeb::Server<SimpleWeb::HTTP>;
+#include "httplib.h"
+using namespace httplib;
 
 #include "json.hpp"
-
 using json = nlohmann::json;
 
 const int SIM_ROWS = 20;
@@ -405,29 +402,38 @@ GameState process_state(json const& j) {
 	return state;
 }
 
-void server() {
-	HttpServer server;
-	server.config.port = 5000;
+void server(int port) {
+	Server server;
 
-	server.resource["^/start$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
+	server.post("/start", [](Request const& req, Response& res) {
+		auto start = chrono::high_resolution_clock::now();
+
 		cout << "/start" << endl;
 
-		auto j_in = json::parse(request->content.string());
-		cout << j_in.dump(2) << endl;
+		auto j_in = json::parse(req.body);
+//		cout << j_in.dump(2) << endl;
 
 		_states[j_in.at("game_id")] = GameState(j_in.at("height"), j_in.at("width"));
 
 		json j_out;
 		j_out["color"] = "#00ff00";
 		j_out["name"] = "clifford";
-		response->write(SimpleWeb::StatusCode::success_ok, j_out.dump(), { { "Content-Type", "application/json" } });
-	};
+		res.status = 200;
+		res.headers = { { "Content-Type", "application/json" } };
+		res.body = j_out.dump();
 
-	server.resource["^/move$"]["POST"] = [](shared_ptr<HttpServer::Response> response, shared_ptr<HttpServer::Request> request) {
+		auto end = chrono::high_resolution_clock::now();
+
+		cout << "Responded in " << chrono::duration_cast<chrono::milliseconds>(end - start).count() << "ms" << endl;
+	});
+
+	server.post("/move", [](Request const& req, Response& res) {
+		auto start = chrono::high_resolution_clock::now();
+
 		cout << "/move" << endl;
 
-		auto j_in = json::parse(request->content.string());
-		cout << j_in.dump(2) << endl;
+		auto j_in = json::parse(req.body);
+//		cout << j_in.dump(2) << endl;
 
 		auto state = process_state(j_in);
 
@@ -435,25 +441,29 @@ void server() {
 		string taunt;
 		j_out["move"] = move_str(get_move(state, taunt));
 		j_out["taunt"] = taunt;
-		response->write(SimpleWeb::StatusCode::success_ok, j_out.dump(), { { "Content-Type", "application/json" } });
+		res.status = 200;
+		res.headers = { { "Content-Type", "application/json" } };
+		res.body = j_out.dump();
 
-		cout << "output" << endl;
-		cout << j_out.dump() << endl;
-	};
+//		cout << "output" << endl;
+//		cout << j_out.dump() << endl;
 
-	server.on_error = [](shared_ptr<HttpServer::Request> request, SimpleWeb::error_code const& ec) {
-		cout << "Error "  << ec.value() << ": " << ec.message() << endl;
-		cout << request->content.string() << endl;
-	};
+		auto end = chrono::high_resolution_clock::now();
 
-	thread server_thread([&server]() {
-		server.start();
+		cout << "Responded in " << chrono::duration_cast<chrono::milliseconds>(end - start).count() << "ms" << endl;
 	});
 
-	server_thread.join();
+	cout << "Listening on port " << port << endl;
+	server.listen("0.0.0.0", port);
 }
 
 int main(int argc, const char* argv[]) {
-	server();
+	int port = 5000;
+	if (argc > 1) {
+		stringstream ss;
+		ss << argv[1];
+		ss >> port;
+	}
+	server(port);
 	return 0;
 }
