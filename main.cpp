@@ -18,10 +18,11 @@ const int SIM_COLS = 20;
 typedef int Square;
 
 // Byte 0 -- what occupies a space
-enum Occupier : uint8_t {
-  Empty   =  0,
-  Player  = +1,
-  Food    = +2
+class OccupierFlag {
+public:
+	static const uint8_t Player  = 1 << 0;
+	static const uint8_t Food    = 1 << 1;
+	static const uint8_t Visited = 1 << 2;
 };
 
 // Byte 1 -- we are owner 0
@@ -42,6 +43,12 @@ struct Coord {
   int row;
   int col;
 };
+
+ostream& operator<<(ostream& os, const Coord& c)
+{
+	os << "(" << c.row << "," << c.col << ")";
+	return os;
+}
 
 struct Snake {
 	vector<Coord> coords;
@@ -78,6 +85,10 @@ enum class Move {
 };
 typedef set<Move> Moves;
 
+const set<Move> AllMoves = {
+	Move::Up, Move::Down, Move::Left, Move::Right
+};
+
 const string Colors[] = {
   "1;31", // Bright Red
   "1;32", // Bright Green
@@ -95,8 +106,8 @@ const string Colors[] = {
   "1;30", // Bright Black
 };
 
-inline Occupier get_occupier(Board const& board, Coord const& c) {
-  return static_cast<Occupier>(board[c.row][c.col] & 0x00000FF);
+inline bool get_flag(Board const& board, Coord const& c, int flag) {
+  return (board[c.row][c.col] & 0x000000FF) & flag;
 }
 
 inline Owner get_owner(Board const& board, Coord const& c) {
@@ -107,9 +118,20 @@ inline Length get_length(Board const& board, Coord const& c) {
   return static_cast<Length>((board[c.row][c.col] & 0xFFFF0000) >> 16);
 }
 
-inline void set_occupier(Board& board, Coord const& c, Occupier occ) {
+inline bool is_empty(Board& board, Coord const& c) {
+	return !(board[c.row][c.col] & 0x000000FF);
+}
+
+inline void clear_flag(Board& board, Coord const& c, int flag) {
+	board[c.row][c.col] |= ~flag;
+}
+
+inline void set_flag(Board& board, Coord const& c, int flag) {
+	board[c.row][c.col] |=  flag;
+}
+
+inline void clear_flags(Board& board, Coord const& c) {
   board[c.row][c.col] &= 0xFFFF0000;
-  board[c.row][c.col] |= static_cast<uint8_t>(occ);
 }
 
 inline void set_owner(Board& board, Coord const& c, uint8_t owner) {
@@ -135,10 +157,10 @@ void draw_board(Board const& board) {
   for (int i = 0; i < board.size(); ++i) {
     for (int j = 0; j < board[i].size(); ++j) {
       Coord c(i, j);
-      switch (get_occupier(board, c)) {
-        case Empty:  cout << '_'; break;
-        case Player: draw_colored('0' + get_length(board, c), get_owner(board, c)); break;
-        case Food:   draw_colored('*', 1); break;
+      switch (0 /*get_occupier(board, c)*/) {
+//        case Empty:  cout << '_'; break;
+//        case Player: draw_colored('0' + get_length(board, c), get_owner(board, c)); break;
+//        case Food:   draw_colored('*', 1); break;
         default: cout << '?';
       }
     }
@@ -170,7 +192,7 @@ void stepdown_length(Board& board) {
       if (val > 0) {
         set_length(board, c, val - 1);
         if (val == 1) {
-          set_occupier(board, c, Empty);
+          clear_flag(board, c, OccupierFlag::Player);
         }
       }
     }
@@ -229,7 +251,7 @@ GameState random_step(GameState const& in) {
 void simulate() {
 	auto state = GameState(SIM_ROWS, SIM_COLS);
 	add_snake(state, Coord(0,0), 3, 100);
-	set_occupier(state.board, Coord(5, 8), Food);
+	set_flag(state.board, Coord(5, 8), OccupierFlag::Food);
 
 	draw(state);
 
@@ -296,13 +318,60 @@ inline int taxicab_dist(Coord const& a, Coord const& b) {
 	return abs(a.row - b.row) + abs(a.col - b.col);
 }
 
+bool in_bounds(Coord const& a, GameState const& state) {
+	if (a.row < 0) return false;
+	if (a.col < 0) return false;
+	if (a.row >= state.rows) return false;
+	if (a.col >= state.cols) return false;
+	return true;
+}
+
+// Measures distance by marking sections of the game board as Visited
+int turn_dist(Coord const& src, Coord const& dst, GameState& state, int dist) {
+	if (src == dst) return dist;
+
+	// To send into next calls
+	auto next_state = state;
+
+	// Mark our current location as used
+	set_flag(next_state.board, src, OccupierFlag::Visited);
+
+	// Step down the board to account for tail movement
+	stepdown_length(next_state.board);
+
+	// Check all possible next moves
+	int min_dist = INT_MAX;
+	Move min_move;
+
+	for (auto const& m : AllMoves) {
+		auto next_coord = rel_coord(src, m);
+		if (!in_bounds(next_coord, next_state)) continue;
+		if (get_flag(next_state.board, next_coord, OccupierFlag::Visited)) continue;
+		int this_dist = turn_dist(next_coord, dst, next_state, dist+1);
+		if (this_dist < min_dist) {
+			min_dist = this_dist;
+			min_move = m;
+		}
+	}
+
+	//
+	if (min_dist != INT_MAX) {
+		cout << "Turn distance from " << src << " to " << dst << " is " << min_dist;
+		return min_dist;
+	} else {
+		// We weren't able to reach the destination in this move
+		return INT_MAX;
+	}
+}
+
 // Distance from any coordinate to food (in units of "number of moves")
 // TODO: We can't use this "ideal" distance to food because there may not be an actual path of that distance
 // Other snakes can cut us off so that we can't reach the food as soon as we expect
 int min_dist_to_food(Coord const& c, GameState const& state) {
 	int min_dist = INT_MAX;
 	for (auto const& f : state.food) {
-		min_dist = min(min_dist, taxicab_dist(c, f));
+//		min_dist = min(min_dist, taxicab_dist(c, f));
+		min_dist = min(min_dist, turn_dist(c, f, state, 0));
 	}
 	return min_dist;
 }
@@ -320,7 +389,7 @@ void filter_starvation(GameState const& state, Moves& moves) {
 
 Move get_move(GameState const& state, string& taunt) {
 	// Start by considering all possible moves
-	Moves moves = { Move::Up, Move::Down, Move::Left, Move::Right };
+	Moves moves = AllMoves;
 
 	// Remove any moves that would cause us a guaranteed loss (wall collisions and self collisions)
 	filter_wall_collisions(state, moves);
