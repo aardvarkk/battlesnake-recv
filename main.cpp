@@ -5,10 +5,14 @@
 #include <random>
 #include <set>
 
-// CASES TO FIX:
-// We won't "stall" to get our tail to move out of the way.
-// We'll start making random-ish moves because we THINK we're going to starve (can't get through our own body)
-// but if we STALL long enough we actually could get back out
+// TODO:
+
+// - If we can "race" all other snakes to food (guaranteed available path to reach it AND escape?) we should probably do it
+// Check taxicab distance from all snakes to food and try to keep ourselves 1 turn ahead (keep their taxicab distances to food at ours + 1 at a minimum)
+
+// - We'll surround food with our own body such that once we get it we have nowhere to go *after*
+
+// - Have no logic for head collisions
 using namespace std;
 
 #include "httplib.h"
@@ -162,21 +166,25 @@ void draw_board(Board const& board) {
   for (int i = 0; i < board.size(); ++i) {
     for (int j = 0; j < board[i].size(); ++j) {
       Coord c(i, j);
-      switch (0 /*get_occupier(board, c)*/) {
-//        case Empty:  cout << '_'; break;
-//        case Player: draw_colored('0' + get_counter(board, c), get_owner(board, c)); break;
-//        case Food:   draw_colored('*', 1); break;
-        default: cout << '?';
-      }
+			if      (board[i][j] == 0) {
+				cout << '_';
+			} else if (get_flag(board, c, OccupierFlag::Player)) {
+				draw_colored('0' + (get_counter(board, c) % 10), get_owner(board, c));
+			} else if (get_flag(board, c, OccupierFlag::Food)) {
+				draw_colored('*', 1);
+			} else {
+				cout << '?';
+			}
     }
     cout << endl;
   }
 }
 
 void draw(GameState const& state) {
-//  for (int i = 0; i < state.food_left.size(); ++i) {
-//    cout << i << ": " << state.food_left[i] << " ";
-//  }
+	int i = 0;
+	for (auto const& snake : state.snakes) {
+		cout << i++ << ": " << snake.health_points << " ";
+	}
   cout << endl;
   draw_board(state.board);
 }
@@ -298,25 +306,20 @@ void filter_wall_collisions(GameState const& state, Moves& moves) {
 	if (me.head().col >= state.cols - 1) moves.erase(Move::Right);
 }
 
-void filter_self_collisions(GameState const& state, Moves& moves) {
+// Don't collide with "bodies"
+// Tail is OK (counter of 1) because it will be gone next turn
+// We don't know where heads are going to be
+// But anything else with a counter > 1 is either our body or another snake's
+void filter_body_collisions(GameState const& state, Moves& moves) {
 	auto const& me = get_snake(state, state.me);
+	auto head = me.head();
 
-	// Don't collide with self
-	for (auto const& body : me.coords) {
-		// Tail is a special case...
-		// If we're not about to eat food, it's OK to "collide" with the tail
-		// because it's going to MOVE by the next frame!
-		// Note that we only ignore our tail if it's a "single tail" (not a "stacked tail")
-		// At this point we assume it's OK to hit our own tail
-		// but we'll do a check later to filter it out if we're about to get food
-		if (body == me.tail() && me.single_tail()) continue;
-
-		// Check collisions with our own body (other than the tail)
-		if (body == rel_coord(me.head(), Move::Up)) moves.erase(Move::Up);
-		if (body == rel_coord(me.head(), Move::Left)) moves.erase(Move::Left);
-		if (body == rel_coord(me.head(), Move::Down)) moves.erase(Move::Down);
-		if (body == rel_coord(me.head(), Move::Right)) moves.erase(Move::Right);
+	Moves filtered;
+	for (auto const& m : moves) {
+		if (get_counter(state.board, rel_coord(head, m)) > 1) continue;
+		filtered.insert(m);
 	}
+	moves = filtered;
 }
 
 inline int taxicab_dist(Coord const& a, Coord const& b) {
@@ -407,22 +410,37 @@ void filter_starvation(GameState const& state, Moves& moves) {
 	auto const& me = get_snake(state, state.me);
 
 	Moves filtered;
+	bool clear_path_exists = false;
 	for (auto const& m : moves) {
-		if (min_dist_to_food(rel_coord(me.head(), m), state) < me.health_points) {
+		auto min_dist = min_dist_to_food(rel_coord(me.head(), m), state);
+
+		if (min_dist < INT_MAX) {
+			clear_path_exists = true;
+		}
+
+		if (min_dist < me.health_points) {
 			filtered.insert(m);
 		}
 	}
 
-	moves = filtered;
+	// If we found at least one open path to food then we'll filter so we take that path
+	if (clear_path_exists) {
+		moves = filtered;
+	}
+	// There's no current path to food, so don't filter down to nothing or we'll think we're dead!
+	// Just return non-colliding paths and we'll get smarter about what to do next...
+	else {
+		return;
+	}
 }
 
 Move get_move(GameState const& state, string& taunt) {
 	// Start by considering all possible moves
 	Moves moves = AllMoves;
 
-	// Remove any moves that would cause us a guaranteed loss (wall collisions and self collisions)
+	// Remove any moves that would cause us a guaranteed loss (wall collisions and body collisions)
 	filter_wall_collisions(state, moves);
-	filter_self_collisions(state, moves);
+	filter_body_collisions(state, moves);
 
 	// Any move we make is death!
 	if (moves.empty()) {
@@ -473,13 +491,14 @@ Move get_move(GameState const& state, string& taunt) {
 	}
 }
 
-void process_snake(json const& j, GameState& state) {
+void process_snake(json const& j, uint8_t owner, GameState& state) {
 	Snake s;
 
 	for (auto jc : j.at("coords")) {
 		Coord c(jc.at(1), jc.at(0));
 		s.coords.push_back(c);
 		set_flag(state.board, c, OccupierFlag::Player);
+		set_owner(state.board, c, owner);
 	}
 
 	// Set counter in reverse so head has max value
@@ -498,12 +517,15 @@ GameState process_state(json const& j) {
 	GameState state = _states.at(j.at("game_id"));
 
 	for (auto const& f : j.at("food")) {
-		state.food.push_back(Coord(f.at(1), f.at(0)));
+		Coord c(f.at(1), f.at(0));
+		state.food.push_back(c);
+		set_flag(state.board, c, OccupierFlag::Food);
 	}
 
 	state.snakes.clear();
+	uint8_t owner = 0;
 	for (auto const& s : j.at("snakes")) {
-		process_snake(s, state);
+		process_snake(s, owner++, state);
 	}
 	state.me = j.at("you");
 
@@ -544,6 +566,7 @@ void server(int port) {
 //		cout << j_in.dump(2) << endl;
 
 		auto state = process_state(j_in);
+		draw(state);
 
 		json j_out;
 		string taunt;
