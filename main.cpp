@@ -2,17 +2,47 @@
 #include <iomanip>
 #include <iostream>
 #include <deque>
+#include <queue>
 #include <random>
 #include <set>
 
+// RULES:
+// - If two snakes of same length hit each other they both die
+
 // TODO:
+
+// - NEVER move into a spot where in the *best* case scenario (tails disappearing with no heads added) we can't fit our length
+// Don't have to be clever about it, just project ourselves forward to ensure there's at least ONE path (depth first search) long enough for us
+// For instance, there's a 1-block slot and we move towards it even though we'd have nowhere to go afterwards
+// Easiest might be to flood-fill the point we're going to and just look at how many empty squares it's connected to
+// i.e. never enter an AREA we can't fit ourselves in
 
 // - If we can "race" all other snakes to food (guaranteed available path to reach it AND escape?) we should probably do it
 // Check taxicab distance from all snakes to food and try to keep ourselves 1 turn ahead (keep their taxicab distances to food at ours + 1 at a minimum)
 
 // - We'll surround food with our own body such that once we get it we have nowhere to go *after*
+// It's OK to leave food until near-starvation, but we have to make damn sure we can get OUT after getting the food!
 
 // - Have no logic for head collisions
+// - Strongly avoid "head" spaces that can be moved to by other snakes if they're longer than us
+
+// - Subtract a value from the "counter" to see how many turns we have to "stall" until we'd get full access to different areas
+
+// - Move to the space your opponent wants in TWO turns (unless you are longer, in which case move for the one turn and if he collides he dies!)
+
+// - You can perfectly encircle if your length is even -- for instance, with length 8 you can perfectly surround food
+// If odd, you can mostly encircle (but space between your tail and head)
+// To encircle, just try to be a rectangle at first (until we get so big that we have to cover more area)
+
+// - FEATURES TO CONSIDER:
+//  - Do we have the most/least health points of all remaining snakes? Where are we in the rankings?
+//  - Are we the closest/farthest from food of all remaining snakes?
+//  - Are we the shortest/longest of all remaining snakes?
+//  - Do we have the most/least possible area to move to of all remaining snakes?
+
+// - Really, we're trying to maximize our turns remaining while minimizing everybody else's
+//  - Maximum of turns remaining is just health remaining -- aren't really guaranteed any more than that
+//  - Minimum is 0 (no possible move left to not die on the next turn)
 using namespace std;
 
 #include "httplib.h"
@@ -43,8 +73,8 @@ typedef uint16_t Counter;
 typedef vector< vector<Square> > Board;
 
 struct Coord {
-  Coord() {}
-  Coord(int r, int c) : row(r), col(c) {}
+  Coord() = default;
+	Coord(int r, int c) : row(r), col(c) {}
 	bool operator==(Coord const& other) const {
 		return this->row == other.row && this->col == other.col;
 	}
@@ -60,12 +90,13 @@ ostream& operator<<(ostream& os, const Coord& c)
 }
 
 struct Snake {
+	Snake() = default;
 	vector<Coord> coords;
 	int health_points; // How much food each snake has remaining
 	string id;
 	Coord head() const { return coords.front(); }
 	Coord tail() const { return coords.back(); }
-	bool single_tail() const { return !(coords.back() == *(coords.end()-1)); } // Tail can stack at the start
+	int length() const { return coords.size(); }
 };
 
 struct GameState {
@@ -116,7 +147,7 @@ const string Colors[] = {
 };
 
 inline bool get_flag(Board const& board, Coord const& c, int flag) {
-  return (board[c.row][c.col] & 0x000000FF) & flag;
+  return ((board[c.row][c.col] & 0x000000FF) & flag) != 0;
 }
 
 inline Owner get_owner(Board const& board, Coord const& c) {
@@ -127,7 +158,7 @@ inline Counter get_counter(Board const& board, Coord const& c) {
   return static_cast<Counter>((board[c.row][c.col] & 0xFFFF0000) >> 16);
 }
 
-inline bool is_empty(Board& board, Coord const& c) {
+inline bool get_is_empty(Board const& board, Coord const& c) {
 	return !(board[c.row][c.col] & 0x000000FF);
 }
 
@@ -166,7 +197,7 @@ void draw_board(Board const& board) {
   for (int i = 0; i < board.size(); ++i) {
     for (int j = 0; j < board[i].size(); ++j) {
       Coord c(i, j);
-			if      (board[i][j] == 0) {
+			if (get_is_empty(board, c)) {
 				cout << '_';
 			} else if (get_flag(board, c, OccupierFlag::Player)) {
 				draw_colored('0' + (get_counter(board, c) % 10), get_owner(board, c));
@@ -203,7 +234,7 @@ void stepdown_counter(Board& board) {
       Coord c(i,j);
       auto val = get_counter(board, c);
       if (val > 0) {
-        set_counter(board, c, val - 1);
+        set_counter(board, c, static_cast<Counter>(val - 1));
         if (val == 1) {
           clear_flag(board, c, OccupierFlag::Player);
         }
@@ -336,13 +367,13 @@ bool in_bounds(Coord const& a, GameState const& state) {
 
 // Valid children are:
 // 1. Not already visited
-// 2. Not occupied by a player
+// 2. Not occupied by a non-tail player
 void add_valid_children(Coord const& c, GameState& state, deque<Coord>& children) {
 	for (auto const& m : AllMoves) {
 		auto child = rel_coord(c, m);
 		if (!in_bounds(child, state)) continue;
 		if (get_flag(state.board, child, OccupierFlag::Visited)) continue;
-		if (get_flag(state.board, child, OccupierFlag::Player))  continue;
+		if (get_counter(state.board, child) > 1) continue;
 		set_flag(state.board, child, OccupierFlag::Visited);
 		children.push_back(child);
 	}
@@ -434,6 +465,59 @@ void filter_starvation(GameState const& state, Moves& moves) {
 	}
 }
 
+Move random_move(Moves const& allowable = AllMoves) {
+	vector<Move> rmoves;
+	for (auto move : allowable) rmoves.push_back(move);
+	shuffle(rmoves.begin(), rmoves.end(), _rng);
+	return *rmoves.begin();
+}
+
+// TODO: Improve by "stepping down" on each "turn" so that we properly measure the movement of our own tail
+// and don't underestimate the area available to us
+int accessible_area(GameState const &state, Coord const &start) {
+	int area = 0;
+
+	auto board = state.board;
+
+	queue<Coord> unvisited;
+	unvisited.push(start);
+
+	while (!unvisited.empty()) {
+		auto c = unvisited.front();
+		unvisited.pop();
+
+		if (!in_bounds(c, state)) continue;
+		if (get_flag(board, c, OccupierFlag::Visited)) continue;
+		if (get_counter(board, c) > 1) continue; // Non-tail player
+		if (get_flag(board, c, OccupierFlag::Food)) --area; // Food spot is a null op, because we'll grow by one to use it
+
+		set_flag(board, c, OccupierFlag::Visited);
+		++area;
+
+		for (auto const& dir : AllMoves) {
+			unvisited.push(rel_coord(c, dir));
+		}
+	}
+
+	return area;
+}
+
+// For each of the moves, flood fill and count the area available in that direction
+// If the area isn't big enough to hold our length, don't go into it
+void filter_inadequate_areas(GameState const& state, Moves& moves) {
+	Moves filtered;
+	auto me = get_snake(state, state.me);
+	for (auto const& m : moves) {
+		auto area = accessible_area(state, rel_coord(me.head(), m));
+		if (area >= me.length()) {
+			filtered.insert(m);
+			cout << "Moving " << move_str(m) << " is OK since we can fit length " << me.length() << " in area " << area << endl;
+		} else {
+			cout << "Ignoring " << move_str(m) << " since we can't fit length " << me.length() << " in area " << area << endl;
+		}
+	}
+}
+
 Move get_move(GameState const& state, string& taunt) {
 	// Start by considering all possible moves
 	Moves moves = AllMoves;
@@ -441,6 +525,7 @@ Move get_move(GameState const& state, string& taunt) {
 	// Remove any moves that would cause us a guaranteed loss (wall collisions and body collisions)
 	filter_wall_collisions(state, moves);
 	filter_body_collisions(state, moves);
+	filter_inadequate_areas(state, moves);
 
 	// Any move we make is death!
 	if (moves.empty()) {
@@ -451,11 +536,6 @@ Move get_move(GameState const& state, string& taunt) {
 	// Get a copy of our options pre-rough-stuff
 	// We can fall back to it if we have no other option
 	Moves pre = moves;
-
-	// TODO: Strongly avoid going down any paths that will lead to certain death
-	// (we can wind into ourselves and not have a way out from our own trap)
-	// How? We want to guarantee we have at least as many moves as our own length (+ any length gained by food)
-	// or we don't go that way
 
 	// Strongly avoid any collisions with other snake sides
 	// (basically guaranteed loss unless they also collide in the same frame)
@@ -481,13 +561,37 @@ Move get_move(GameState const& state, string& taunt) {
 		taunt = "You leave me no choice...";
 		return *moves.begin();
 	}
-	// We have a list of moves to choose from... for now choose randomly
+	// We have a list of moves to choose from...
 	else {
-		taunt = "Let's get freaky!";
-		vector<Move> rmoves;
-		for (auto move : moves) rmoves.push_back(move);
-		shuffle(rmoves.begin(), rmoves.end(), _rng);
-		return *rmoves.begin();
+
+		auto me = get_snake(state, state.me);
+
+		if (true /*me.length() < 8*/) {
+			int min_dist = INT_MAX;
+			Moves food_moves;
+			for (auto const& m : moves) {
+				int dist = min_dist_to_food(rel_coord(me.head(), m), state);
+				if (dist < min_dist) {
+					food_moves.clear();
+					food_moves.insert(m);
+					min_dist = dist;
+				} else if (dist == min_dist) {
+					food_moves.insert(m);
+				}
+			}
+
+			if (food_moves.size() == 1) {
+				taunt = "I KNOW how to eat!";
+				return *food_moves.begin();
+			} else {
+				taunt = "Eat the FOOD, TINA!";
+				return random_move(food_moves);
+			}
+		}
+		else {
+			taunt = "Let's get freaky!";
+			return random_move(moves);
+		}
 	}
 }
 
@@ -504,7 +608,7 @@ void process_snake(json const& j, uint8_t owner, GameState& state) {
 	// Set counter in reverse so head has max value
 	int ctr = 0;
 	for (auto it = s.coords.rbegin(); it != s.coords.rend(); ++it) {
-		set_counter(state.board, *it, ++ctr);
+		set_counter(state.board, *it, static_cast<Counter>(++ctr));
 	}
 
 	s.health_points = j.at("health_points");
