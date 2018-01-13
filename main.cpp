@@ -11,34 +11,50 @@
 
 // TODO:
 
-// - NEVER move into a spot where in the *best* case scenario (tails disappearing with no heads added) we can't fit our length
-// Don't have to be clever about it, just project ourselves forward to ensure there's at least ONE path (depth first search) long enough for us
-// For instance, there's a 1-block slot and we move towards it even though we'd have nowhere to go afterwards
-// Easiest might be to flood-fill the point we're going to and just look at how many empty squares it's connected to
-// i.e. never enter an AREA we can't fit ourselves in
+// - If we can limit the opponent area severely, do it (i.e. lock them against a wall if possible)
+
+// - If all players are too far away from food to live (and we have enough), let them starve and DON'T eat the food
+// Just surround it until they die
 
 // - If we can "race" all other snakes to food (guaranteed available path to reach it AND escape?) we should probably do it
 // Check taxicab distance from all snakes to food and try to keep ourselves 1 turn ahead (keep their taxicab distances to food at ours + 1 at a minimum)
+
+// - Never move such that the best-case (tails disappearing) NEW area we WOULD CREATE with our move is less than the amount we need for our length
+// This is just pushing forward our area check by another turn
 
 // - We'll surround food with our own body such that once we get it we have nowhere to go *after*
 // It's OK to leave food until near-starvation, but we have to make damn sure we can get OUT after getting the food!
 
 // - Have no logic for head collisions
-// - Strongly avoid "head" spaces that can be moved to by other snakes if they're longer than us
+// - Strongly avoid "head" spaces that can be moved to by other snakes if they're longer than us (they won't necessarily move there, though)
 
 // - Subtract a value from the "counter" to see how many turns we have to "stall" until we'd get full access to different areas
 
 // - Move to the space your opponent wants in TWO turns (unless you are longer, in which case move for the one turn and if he collides he dies!)
+
+// - Don't leave "no escape" -- if we are long enough to fill the board top to bottom and food is on the wrong side of us then we're bound to die (in single player)
+
+// - Concept of "ideal" area -- take square root of our length and that's the space we NEED
+
+// - Dying of starvation because we can't get to the next food instance in time
+//  - Don't enter an area WITHOUT FOOD where the area doesn't give access to food in the next HEALTH POINT turns
+//  - What maximizes our chances of getting to new food? Want most possible paths, which means our body should stay "tight" and occupy as little radius/w*h as possible
+
+// - TODO: Don't collide with longer snake heads (but don't know where they're going!)
 
 // - You can perfectly encircle if your length is even -- for instance, with length 8 you can perfectly surround food
 // If odd, you can mostly encircle (but space between your tail and head)
 // To encircle, just try to be a rectangle at first (until we get so big that we have to cover more area)
 
 // - FEATURES TO CONSIDER:
+//  - If we detect a snake in a situation where they're guaranteed to starve (can't exit an area without food and has no health points), then wait them out!
 //  - Do we have the most/least health points of all remaining snakes? Where are we in the rankings?
 //  - Are we the closest/farthest from food of all remaining snakes?
 //  - Are we the shortest/longest of all remaining snakes?
 //  - Do we have the most/least possible area to move to of all remaining snakes?
+//  - Choke points -- squares to occupy that would drastically reduce our opponent's movable area
+//   - How could we find these? One hint is REDUCING NUMBER OF OPTIONS -- look for snakes that only have a few moves available and occupy those lines
+//  - Maximum branching -- go direction that continues to open up multiple options as we expand (lots of opportunity)
 
 // - Really, we're trying to maximize our turns remaining while minimizing everybody else's
 //  - Maximum of turns remaining is just health remaining -- aren't really guaranteed any more than that
@@ -110,14 +126,14 @@ struct GameState {
 
 	int rows, cols;
   Board board; // Board state
-	string me;
+	string my_id;
+	Snake me;
 	vector<Snake> snakes;
 	vector<Coord> food;
 };
 
 typedef map<string, GameState> GameStates;
 
-GameStates _states;
 default_random_engine _rng;
 
 enum class Move {
@@ -129,7 +145,8 @@ const set<Move> AllMoves = {
 	Move::Up, Move::Down, Move::Left, Move::Right
 };
 
-const string Colors[] = {
+const int NumColors = 14;
+const string Colors[NumColors] = {
   "1;31", // Bright Red
   "1;32", // Bright Green
   "1;33", // Bright Yellow
@@ -186,29 +203,74 @@ inline void set_counter(Board& board, Coord const& c, uint16_t counter) {
 }
 
 string get_color(int idx) {
-  return Colors[idx % 14];
+  return Colors[idx % NumColors];
 }
 
 void draw_colored(char c, int color_idx) {
   cout << "\033[" << get_color(color_idx) << "m" << c << "\033[0m";
 }
 
-void draw_board(Board const& board) {
+Coord rel_coord(Coord const& in, Move dir) {
+	switch (dir) {
+		case Move::Up:    return Coord(in.row - 1, in.col);
+		case Move::Down:  return Coord(in.row + 1, in.col);
+		case Move::Left:  return Coord(in.row, in.col - 1);
+		case Move::Right: return Coord(in.row, in.col + 1);
+		case Move::None:  return Coord(in.row, in.col);
+	}
+}
+
+Move rel_dir(Coord const& from, Coord const& to) {
+	for (auto const& m : AllMoves) {
+		if (to == rel_coord(from, m)) return m;
+	}
+	return Move::None;
+}
+
+void draw_board(GameState const& state) {
+	auto const& board = state.board;
+
+	vector<vector<pair<char, int>>> to_draw;
+	to_draw.resize(board.size());
+	for (auto& row : to_draw) row.resize(board.front().size());
+
   for (int i = 0; i < board.size(); ++i) {
     for (int j = 0; j < board[i].size(); ++j) {
       Coord c(i, j);
 			if (get_is_empty(board, c)) {
-				cout << '_';
+				to_draw[i][j] = make_pair('_', NumColors-1);
 			} else if (get_flag(board, c, OccupierFlag::Player)) {
-				draw_colored('0' + (get_counter(board, c) % 10), get_owner(board, c));
+				to_draw[i][j] = make_pair('0' + get_owner(board, c), get_owner(board, c));
 			} else if (get_flag(board, c, OccupierFlag::Food)) {
-				draw_colored('*', 1);
+				to_draw[i][j] = make_pair('*', 1);
 			} else {
-				cout << '?';
+				to_draw[i][j] = make_pair('?', NumColors-1);
 			}
     }
-    cout << endl;
   }
+
+	for (auto const& snake : state.snakes) {
+		Coord h(snake.head().row, snake.head().col);
+		auto prev = h;
+		for (auto it = snake.coords.begin()+1; it != snake.coords.end(); ++it) {
+			switch (rel_dir(*it, prev)) {
+				case Move::Up:    to_draw[it->row][it->col].first = '^'; break;
+				case Move::Down:  to_draw[it->row][it->col].first = 'v'; break;
+				case Move::Left:  to_draw[it->row][it->col].first = '<'; break;
+				case Move::Right: to_draw[it->row][it->col].first = '>'; break;
+				default: break;
+			}
+			prev = *it;
+		}
+		to_draw[h.row][h.col] = make_pair('H', get_owner(board, h));
+	}
+
+	for (int i = 0; i < board.size(); ++i) {
+		for (int j = 0; j < board[i].size(); ++j) {
+			draw_colored(to_draw[i][j].first, to_draw[i][j].second);
+		}
+		cout << endl;
+	}
 }
 
 void draw(GameState const& state) {
@@ -217,7 +279,7 @@ void draw(GameState const& state) {
 		cout << i++ << ": " << snake.health_points << " ";
 	}
   cout << endl;
-  draw_board(state.board);
+  draw_board(state);
 }
 
 void add_snake(GameState& state, Coord const& c, int length, int food) {
@@ -247,16 +309,6 @@ void stepdown_food(GameState& state) {
 //  for (int i = 0; i < state.food_left.size(); ++i) {
 //    state.food_left[i]--;
 //  }
-}
-
-Coord rel_coord(Coord const& in, Move dir) {
-  switch (dir) {
-    case Move::Up:    return Coord(in.row - 1, in.col);
-    case Move::Down:  return Coord(in.row + 1, in.col);
-    case Move::Left:  return Coord(in.row, in.col - 1);
-    case Move::Right: return Coord(in.row, in.col + 1);
-		case Move::None:  return Coord(in.row, in.col);
-  }
 }
 
 inline string move_str(Move const& dir) {
@@ -328,13 +380,23 @@ Snake get_snake(GameState const& state, string const& id) {
 }
 
 void filter_wall_collisions(GameState const& state, Moves& moves) {
-	auto const& me = get_snake(state, state.me);
-
 	// Don't go off edges
-	if (me.head().row <= 0) moves.erase(Move::Up);
-	if (me.head().col <= 0) moves.erase(Move::Left);
-	if (me.head().row >= state.rows - 1) moves.erase(Move::Down);
-	if (me.head().col >= state.cols - 1) moves.erase(Move::Right);
+	if (state.me.head().row <= 0) {
+		moves.erase(Move::Up);
+		cout << "Can't move up because we'd go off the map" << endl;
+	}
+	if (state.me.head().col <= 0) {
+		moves.erase(Move::Left);
+		cout << "Can't move left because we'd go off the map" << endl;
+	}
+	if (state.me.head().row >= state.rows - 1) {
+		moves.erase(Move::Down);
+		cout << "Can't move down because we'd go off the map" << endl;
+	}
+	if (state.me.head().col >= state.cols - 1) {
+		moves.erase(Move::Right);
+		cout << "Can't move right because we'd go off the map" << endl;
+	}
 }
 
 // Don't collide with "bodies"
@@ -342,13 +404,13 @@ void filter_wall_collisions(GameState const& state, Moves& moves) {
 // We don't know where heads are going to be
 // But anything else with a counter > 1 is either our body or another snake's
 void filter_body_collisions(GameState const& state, Moves& moves) {
-	auto const& me = get_snake(state, state.me);
-	auto head = me.head();
-
 	Moves filtered;
 	for (auto const& m : moves) {
-		if (get_counter(state.board, rel_coord(head, m)) > 1) continue;
-		filtered.insert(m);
+		if (get_counter(state.board, rel_coord(state.me.head(), m)) > 1) {
+			cout << "Can't move " << move_str(m) << " because we'd collide with a body" << endl;
+		} else {
+			filtered.insert(m);
+		}
 	}
 	moves = filtered;
 }
@@ -378,7 +440,7 @@ void add_valid_children(Coord const& c, GameState& state, deque<Coord>& children
 		children.push_back(child);
 	}
 }
-// Measures distance by marking sections of the game board as Visited
+// Measures turn distance from source to destination by marking sections of the game board as Visited
 int turn_dist(Coord const& src, Coord const& dst, GameState const& const_state) {
 	if (!in_bounds(src, const_state)) return INT_MAX;
 	if (!in_bounds(dst, const_state)) return INT_MAX;
@@ -437,20 +499,23 @@ int min_dist_to_food(Coord const& c, GameState const& state) {
 
 // Don't allow a move that would take us farther away from food than our remaining health points allow
 // If our current position + proposed move is greater distance from food than our health points, eliminate it
-void filter_starvation(GameState const& state, Moves& moves) {
-	auto const& me = get_snake(state, state.me);
-
+void filter_starvation(
+	GameState const& state,
+	map<Move, int> const& move_food_dists,
+	Moves& moves
+)
+{
 	Moves filtered;
 	bool clear_path_exists = false;
-	for (auto const& m : moves) {
-		auto min_dist = min_dist_to_food(rel_coord(me.head(), m), state);
-
-		if (min_dist < INT_MAX) {
+	for (pair<Move, int> const& pr : move_food_dists) {
+		if (pr.second < INT_MAX) {
 			clear_path_exists = true;
 		}
 
-		if (min_dist < me.health_points) {
-			filtered.insert(m);
+		if (pr.second >= state.me.health_points) {
+			cout << "Unlikely we can go " << move_str(pr.first) << " to food at dist " << pr.second << " with only " << state.me.health_points << " health" << endl;
+		} else {
+			filtered.insert(pr.first);
 		}
 	}
 
@@ -472,31 +537,39 @@ Move random_move(Moves const& allowable = AllMoves) {
 	return *rmoves.begin();
 }
 
-// TODO: Improve by "stepping down" on each "turn" so that we properly measure the movement of our own tail
-// and don't underestimate the area available to us
-int accessible_area(GameState const &state, Coord const &start) {
+// Measure the total area available to us as turns progress
+int accessible_area(GameState const &const_state, Coord const& start) {
 	int area = 0;
 
-	auto board = state.board;
+	if (!in_bounds(start, const_state)) return area;
 
-	queue<Coord> unvisited;
-	unvisited.push(start);
+	auto state = const_state;
+
+	deque<Coord> unvisited;
+	unvisited.push_back(start);
+	set_flag(state.board, start, OccupierFlag::Visited);
 
 	while (!unvisited.empty()) {
-		auto c = unvisited.front();
-		unvisited.pop();
 
-		if (!in_bounds(c, state)) continue;
-		if (get_flag(board, c, OccupierFlag::Visited)) continue;
-		if (get_counter(board, c) > 1) continue; // Non-tail player
-		if (get_flag(board, c, OccupierFlag::Food)) --area; // Food spot is a null op, because we'll grow by one to use it
+		// Holder for "next round"
+		deque<Coord> children;
 
-		set_flag(board, c, OccupierFlag::Visited);
-		++area;
+		// Go through all the coords at the current level and check them
+		while (!unvisited.empty()) {
 
-		for (auto const& dir : AllMoves) {
-			unvisited.push(rel_coord(c, dir));
+			auto c = unvisited.front();
+			unvisited.pop_front();
+
+			add_valid_children(c, state, children);
+
+			// Food spot is a null op, because we'll grow by one to use it
+			if (get_flag(state.board, c, OccupierFlag::Food)) --area;
+
+			++area;
 		}
+
+		unvisited = children;
+		stepdown_counter(state.board);
 	}
 
 	return area;
@@ -504,18 +577,66 @@ int accessible_area(GameState const &state, Coord const &start) {
 
 // For each of the moves, flood fill and count the area available in that direction
 // If the area isn't big enough to hold our length, don't go into it
-void filter_inadequate_areas(GameState const& state, Moves& moves) {
+map<Move, int> filter_inadequate_areas(GameState const& state, Moves& moves) {
+	map<Move, int> move_food_areas;
 	Moves filtered;
-	auto me = get_snake(state, state.me);
 	for (auto const& m : moves) {
-		auto area = accessible_area(state, rel_coord(me.head(), m));
-		if (area >= me.length()) {
-			filtered.insert(m);
-			cout << "Moving " << move_str(m) << " is OK since we can fit length " << me.length() << " in area " << area << endl;
+		auto area = accessible_area(state, rel_coord(state.me.head(), m));
+		move_food_areas[m] = area;
+		if (area < state.me.length()) {
+			cout << "Can't move " << move_str(m) << " since we can't fit length " << state.me.length() << " in area " << area << endl;
 		} else {
-			cout << "Ignoring " << move_str(m) << " since we can't fit length " << me.length() << " in area " << area << endl;
+			filtered.insert(m);
 		}
 	}
+	moves = filtered;
+	return move_food_areas;
+}
+
+Move check_last_resorts(Moves const& moves, string& taunt) {
+	taunt.clear();
+
+	if (moves.empty()) {
+		cout << "No remaining moves!" << endl;
+		taunt = "Arghhh!";
+		return random_move(AllMoves);
+	} else if (moves.size() == 1) {
+		cout << "Only one non-death move, so we'll make it" << endl;
+		taunt = "Where there's a will, there's a way!";
+		return *moves.begin();
+	}
+
+	return Move::None;
+}
+
+bool is_longest_snake(Snake const& snake, GameState const& state) {
+	for (auto const& other_snake : state.snakes) {
+		if (other_snake.id != snake.id && other_snake.length() > snake.length()) return false;
+	}
+	return true;
+}
+
+bool is_healthiest_snake(Snake const& snake, GameState const& state) {
+	for (auto const& other_snake : state.snakes) {
+		if (other_snake.id != snake.id && other_snake.health_points > snake.health_points) return false;
+	}
+	return true;
+}
+
+int get_move_fatness(Snake const& snake, Move const& m, GameState const& const_state) {
+	auto next_move = rel_coord(snake.head(), m);
+	int min_r, max_r, min_c, max_c;
+	min_r = max_r = next_move.row;
+	min_c = max_c = next_move.col;
+
+	for (auto const& c : snake.coords) {
+		min_r = min(min_r, c.row);
+		max_r = max(max_r, c.row);
+		min_c = min(min_c, c.col);
+		max_c = max(max_c, c.col);
+	}
+
+	return (max_r - min_r + 1) * (max_c - min_c + 1);
 }
 
 Move get_move(GameState const& state, string& taunt) {
@@ -524,73 +645,119 @@ Move get_move(GameState const& state, string& taunt) {
 
 	// Remove any moves that would cause us a guaranteed loss (wall collisions and body collisions)
 	filter_wall_collisions(state, moves);
+	{
+		auto chosen = check_last_resorts(moves, taunt);
+		if (chosen != Move::None) return chosen;
+	}
+
 	filter_body_collisions(state, moves);
-	filter_inadequate_areas(state, moves);
-
-	// Any move we make is death!
-	if (moves.empty()) {
-		taunt = "Arghhh!";
-		return Move::None;
+	{
+		auto chosen = check_last_resorts(moves, taunt);
+		if (chosen != Move::None) return chosen;
 	}
 
-	// Get a copy of our options pre-rough-stuff
-	// We can fall back to it if we have no other option
-	Moves pre = moves;
+	{
+		auto move_food_areas = filter_inadequate_areas(state, moves);
 
-	// Strongly avoid any collisions with other snake sides
-	// (basically guaranteed loss unless they also collide in the same frame)
-	// TODO: Don't collide with other snake sides and longer snake heads
-
-	// Strongly prefer to not move farther away from food than our health allows,
-	// but we can hope that another snake eats food and the new food regenerates closer to us
-	filter_starvation(state, moves);
-
-	// TODO: If we're about to get food, don't allow us to go into our tail spot... but that would imply
-	// that the food is ON our tail (which is impossible), so I don't think we need to worry about this case!
-
-	// We have no good options (very likely to die, but tiny chance of something else...)
-	if (moves.empty()) {
-		taunt = "Here goes nothing!";
-		vector<Move> rmoves;
-		for (auto move : pre) rmoves.push_back(move);
-		shuffle(rmoves.begin(), rmoves.end(), _rng);
-		return *rmoves.begin();
-	}
-	// We only have one possible move, so do it
-	else if (moves.size() == 1) {
-		taunt = "You leave me no choice...";
-		return *moves.begin();
-	}
-	// We have a list of moves to choose from...
-	else {
-
-		auto me = get_snake(state, state.me);
-
-		if (true /*me.length() < 8*/) {
-			int min_dist = INT_MAX;
-			Moves food_moves;
-			for (auto const& m : moves) {
-				int dist = min_dist_to_food(rel_coord(me.head(), m), state);
-				if (dist < min_dist) {
-					food_moves.clear();
-					food_moves.insert(m);
-					min_dist = dist;
-				} else if (dist == min_dist) {
-					food_moves.insert(m);
+		// We don't think we have enough room, so we need to get smart...
+		if (moves.empty()) {
+			// Go through all possible moves and pick the one with the most area
+			Move chosen = Move::None;
+			int max_area = 0;
+			for (pair<Move, int> const& pr : move_food_areas) {
+				if (pr.second > max_area) {
+					max_area = pr.second;
+					chosen = pr.first;
+					cout << "Found better case of area " << max_area << " if we move " << move_str(pr.first) << endl;
+				} else if (pr.second == max_area) {
+					// TODO: If there's a tie, give it to the one that's... tightest to our body? Has least connectivity?
+					cout << "Tie for best area if we move " << move_str(pr.first) << endl;
 				}
 			}
 
-			if (food_moves.size() == 1) {
-				taunt = "I KNOW how to eat!";
-				return *food_moves.begin();
-			} else {
-				taunt = "Eat the FOOD, TINA!";
-				return random_move(food_moves);
+			taunt = "Making it up as I go along...";
+			return chosen;
+		}
+	}
+
+	// Calculate best-case distance to food for each move remaining
+	map<Move, int> move_food_dists;
+	for (auto const& m : moves) {
+		move_food_dists[m] = min_dist_to_food(rel_coord(state.me.head(), m), state);
+	}
+
+	// Strongly prefer to not move farther away from food than our health allows,
+	// but we can hope that another snake eats food and the new food regenerates closer to us
+	{
+		Moves pre = moves;
+		filter_starvation(state, move_food_dists, moves);
+
+		// We have no good options (very likely to die, but tiny chance of something else...)
+		if (moves.empty()) {
+			taunt = "Here goes nothing!";
+			return random_move(pre);
+		}
+		// We only have one possible move, so do it
+		else if (moves.size() == 1) {
+			taunt = "You leave me no choice...";
+			return *moves.begin();
+		}
+	}
+
+	// We have a list of moves to choose from...
+
+	// If we're the longest snake with the most health...
+	if (is_longest_snake(state.me, state) && is_healthiest_snake(state.me, state)) {
+		cout << "We are in great shape... longest and healthiest, so keeping body tight" << endl;
+
+		auto cur_fatness = get_move_fatness(state.me, Move::None, state);
+
+		// Tighten the body...
+		Move chosen = Move::None;
+		int min_fatness = INT_MAX;
+		int min_dist_to_food = INT_MAX; // Secondary criteria
+		for (auto const& m : moves) {
+			auto fatness = get_move_fatness(state.me, m, state);
+			if (fatness < min_fatness) {
+				min_fatness = fatness;
+				chosen = m;
+				cout << "Found new best fatness of " << min_fatness << " by going " << move_str(m) << endl;
+			} else if (fatness == min_fatness && move_food_dists[m] < min_dist_to_food) {
+				min_dist_to_food = move_food_dists[m];
+				cout << "Found same fatness of " << min_fatness << " but with new best food dist of " << min_dist_to_food << endl;
+				chosen = m;
 			}
 		}
-		else {
-			taunt = "Let's get freaky!";
-			return random_move(moves);
+
+		if (min_fatness >= cur_fatness) {
+			cout << "No improvement in fatness for this move..." << endl;
+
+			// Continue on, where we'll pick a move that brings us closer to food
+		} else {
+			taunt = "Keeping it tight!";
+			return chosen;
+		}
+	}
+
+	if (true /*me.length() < 8*/) {
+		int min_dist = INT_MAX;
+		Moves food_moves;
+		for (pair<Move, int> const& pr : move_food_dists) {
+			if (pr.second < min_dist) {
+				food_moves.clear();
+				food_moves.insert(pr.first);
+				min_dist = pr.second;
+			} else if (pr.second == min_dist) {
+				food_moves.insert(pr.first);
+			}
+		}
+
+		if (food_moves.size() == 1) {
+			taunt = "I KNOW how to eat!";
+			return *food_moves.begin();
+		} else {
+			taunt = "Eat the FOOD, TINA!";
+			return random_move(food_moves);
 		}
 	}
 }
@@ -617,8 +784,7 @@ void process_snake(json const& j, uint8_t owner, GameState& state) {
 }
 
 GameState process_state(json const& j) {
-	if (!_states.count(j.at("game_id"))) throw exception();
-	GameState state = _states.at(j.at("game_id"));
+	GameState state(j.at("height"), j.at("width"));
 
 	for (auto const& f : j.at("food")) {
 		Coord c(f.at(1), f.at(0));
@@ -631,7 +797,9 @@ GameState process_state(json const& j) {
 	for (auto const& s : j.at("snakes")) {
 		process_snake(s, owner++, state);
 	}
-	state.me = j.at("you");
+	state.my_id = j.at("you");
+
+	state.me = get_snake(state, state.my_id);
 
 	return state;
 }
@@ -646,8 +814,6 @@ void server(int port) {
 
 		auto j_in = json::parse(req.body);
 //		cout << j_in.dump(2) << endl;
-
-		_states[j_in.at("game_id")] = GameState(j_in.at("height"), j_in.at("width"));
 
 		json j_out;
 		j_out["color"] = "#00ff00";
