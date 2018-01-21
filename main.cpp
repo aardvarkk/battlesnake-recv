@@ -11,6 +11,9 @@
 
 // TODO:
 
+// - If unable to access food, check HOW MANY TURNS until we can and then see where the newly "opened" square is
+//  - Make it a goal to get to that square with exactly the right number of turns left?
+
 // - If we can limit the opponent area severely, do it (i.e. lock them against a wall if possible)
 
 // - If all players are too far away from food to live (and we have enough), let them starve and DON'T eat the food
@@ -110,7 +113,7 @@ ostream& operator<<(ostream& os, const Coord& c)
 struct Snake {
 	Snake() = default;
 	vector<Coord> coords;
-	int health_points; // How much food each snake has remaining
+	int health; // How much food each snake has remaining
 	string id;
 	Coord head() const { return coords.front(); }
 	Coord tail() const { return coords.back(); }
@@ -278,7 +281,7 @@ void draw_board(GameState const& state) {
 void draw(GameState const& state) {
 	int i = 0;
 	for (auto const& snake : state.snakes) {
-		cout << i++ << ": " << snake.health_points << " ";
+		cout << i++ << ": " << snake.health << " ";
 	}
   cout << endl;
   draw_board(state);
@@ -514,8 +517,8 @@ void filter_starvation(
 			clear_path_exists = true;
 		}
 
-		if (pr.second >= state.me.health_points) {
-			cout << "Unlikely we can go " << move_str(pr.first) << " to food at dist " << pr.second << " with only " << state.me.health_points << " health" << endl;
+		if (pr.second >= state.me.health) {
+			cout << "Unlikely we can go " << move_str(pr.first) << " to food at dist " << pr.second << " with only " << state.me.health << " health" << endl;
 		} else {
 			filtered.insert(pr.first);
 		}
@@ -620,7 +623,7 @@ bool is_longest_snake(Snake const& snake, GameState const& state) {
 
 bool is_healthiest_snake(Snake const& snake, GameState const& state) {
 	for (auto const& other_snake : state.snakes) {
-		if (other_snake.id != snake.id && other_snake.health_points > snake.health_points) return false;
+		if (other_snake.id != snake.id && other_snake.health > snake.health) return false;
 	}
 	return true;
 }
@@ -767,8 +770,8 @@ Move get_move(GameState const& state, string& taunt) {
 void process_snake(json const& j, uint8_t owner, GameState& state) {
 	Snake s;
 
-	for (auto jc : j.at("coords")) {
-		Coord c(jc.at(1), jc.at(0));
+	for (auto jc : j.at("body").at("data")) {
+		Coord c(jc.at("y"), jc.at("x"));
 		s.coords.push_back(c);
 		set_flag(state.board, c, OccupierFlag::Player);
 		set_owner(state.board, c, owner);
@@ -780,7 +783,7 @@ void process_snake(json const& j, uint8_t owner, GameState& state) {
 		set_counter(state.board, *it, static_cast<Counter>(++ctr));
 	}
 
-	s.health_points = j.at("health_points");
+	s.health = j.at("health");
 	s.id = j.at("id");
 	state.snakes.push_back(s);
 }
@@ -788,18 +791,18 @@ void process_snake(json const& j, uint8_t owner, GameState& state) {
 GameState process_state(json const& j) {
 	GameState state(j.at("height"), j.at("width"));
 
-	for (auto const& f : j.at("food")) {
-		Coord c(f.at(1), f.at(0));
+	for (auto const& f : j.at("food").at("data")) {
+		Coord c(f.at("y"), f.at("x"));
 		state.food.push_back(c);
 		set_flag(state.board, c, OccupierFlag::Food);
 	}
 
 	state.snakes.clear();
 	uint8_t owner = 0;
-	for (auto const& s : j.at("snakes")) {
+	for (auto const& s : j.at("snakes").at("data")) {
 		process_snake(s, owner++, state);
 	}
-	state.my_id = j.at("you");
+	state.my_id = j.at("you").at("id");
 
 	state.me = get_snake(state, state.my_id);
 
