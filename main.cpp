@@ -36,6 +36,8 @@
 
 // - Concept of "ideal" area -- take square root of our length and that's the space we NEED
 
+// - AVOID moves such that our food target gets pushed inside an area we can't fit in
+
 // - Dying of starvation because we can't get to the next food instance in time
 //  - Don't enter an area WITHOUT FOOD where the area doesn't give access to food in the next HEALTH POINT turns
 //  - What maximizes our chances of getting to new food? Want most possible paths, which means our body should stay "tight" and occupy as little radius/w*h as possible
@@ -262,7 +264,7 @@ void draw_board(GameState const& state) {
 			}
 			prev = *it;
 		}
-		to_draw[h.row][h.col] = make_pair('H', get_owner(board, h));
+		to_draw[h.row][h.col] = make_pair('0' + get_owner(board, h), get_owner(board, h));
 	}
 
 	for (int i = 0; i < board.size(); ++i) {
