@@ -64,6 +64,17 @@
 // - Really, we're trying to maximize our turns remaining while minimizing everybody else's
 //  - Maximum of turns remaining is just health remaining -- aren't really guaranteed any more than that
 //  - Minimum is 0 (no possible move left to not die on the next turn)
+
+// - Random...
+// Flood fill out for min travellable dist check (ignore any movement of own tail? and other players and make sure we can exit any halls we enter)
+// Neural network for ourselves based on relative square around us
+//	Connectivity of layers based on physical connections?
+// Try to regress on number of turns remaining
+// Model for ourself and use same network to model for each other player
+//	Want move that has biggest delta change between our number of remaining turns and some function of all other players (min?)
+// Find/check shortest navigable path to food — can be flood filled since we should never return to same location on the way to food. Do this instead of taxicab distance since it accounts for having to move around our own body. Assume our tail does move. Mark off places we’ve been so they don’t reflood.
+// To and from JSON for game state
+
 using namespace std;
 
 #include "httplib.h"
@@ -72,310 +83,14 @@ using namespace httplib;
 #include "json.hpp"
 using json = nlohmann::json;
 
+#include "draw.h"
+#include "types.h"
+#include "util.h"
+
 const int SIM_ROWS = 20;
 const int SIM_COLS = 20;
 
-typedef int Square;
-
-// Byte 0 -- what occupies a space
-class OccupierFlag {
-public:
-	static const uint8_t Player  = 1 << 0;
-	static const uint8_t Food    = 1 << 1;
-	static const uint8_t Visited = 1 << 2;
-};
-
-// Byte 1 -- by index in snakes
-typedef uint8_t Owner;
-
-// Bytes 2-3 -- helps to progress board state
-typedef uint16_t Counter;
-
-typedef vector< vector<Square> > Board;
-
-struct Coord {
-  Coord() = default;
-	Coord(int r, int c) : row(r), col(c) {}
-	bool operator==(Coord const& other) const {
-		return this->row == other.row && this->col == other.col;
-	}
-
-  int row;
-  int col;
-};
-
-ostream& operator<<(ostream& os, const Coord& c)
-{
-	os << "(" << c.row << "," << c.col << ")";
-	return os;
-}
-
-struct Snake {
-	Snake() = default;
-	vector<Coord> coords;
-	int health; // How much food each snake has remaining
-	string id;
-	Coord head() const { return coords.front(); }
-	Coord tail() const { return coords.back(); }
-	int length() const { return coords.size(); }
-};
-
-struct GameState {
-	GameState() : rows(0), cols(0) {}
-  GameState(int rows, int cols) : rows(rows), cols(cols) {
-    board.resize(rows);
-    for (int i = 0; i < cols; ++i) {
-      board[i] = vector<Square>(cols);
-    }
-  }
-
-	int rows, cols;
-  Board board; // Board state
-	string my_id;
-	Snake me;
-	vector<Snake> snakes;
-	vector<Coord> food;
-};
-
-typedef map<string, GameState> GameStates;
-
 default_random_engine _rng;
-
-enum class Move {
-  Up, Down, Left, Right, None
-};
-typedef set<Move> Moves;
-
-const set<Move> AllMoves = {
-	Move::Up, Move::Down, Move::Left, Move::Right
-};
-
-const int NumColors = 14;
-const string Colors[NumColors] = {
-  "1;31", // Bright Red
-  "1;32", // Bright Green
-  "1;33", // Bright Yellow
-  "1;34", // Bright Blue
-  "1;35", // Bright Magenta
-  "1;36", // Bright Cyan
-  "31", // Red
-  "32", // Green
-  "33", // Yellow
-  "34", // Blue
-  "35", // Magenta
-  "36", // Cyan
-  "37", // White
-  "1;30", // Bright Black
-};
-
-inline bool get_flag(Board const& board, Coord const& c, int flag) {
-  return ((board[c.row][c.col] & 0x000000FF) & flag) != 0;
-}
-
-inline Owner get_owner(Board const& board, Coord const& c) {
-  return static_cast<Owner>((board[c.row][c.col] & 0x0000FF00) >> 8);
-}
-
-inline Counter get_counter(Board const& board, Coord const& c) {
-  return static_cast<Counter>((board[c.row][c.col] & 0xFFFF0000) >> 16);
-}
-
-inline bool get_is_empty(Board const& board, Coord const& c) {
-	return !(board[c.row][c.col] & 0x000000FF);
-}
-
-inline void clear_flag(Board& board, Coord const& c, int flag) {
-	board[c.row][c.col] |= ~flag;
-}
-
-inline void set_flag(Board& board, Coord const& c, int flag) {
-	board[c.row][c.col] |=  flag;
-}
-
-inline void clear_flags(Board& board, Coord const& c) {
-  board[c.row][c.col] &= 0xFFFF0000;
-}
-
-inline void set_owner(Board& board, Coord const& c, uint8_t owner) {
-  board[c.row][c.col] &= 0xFFFF00FF;
-  board[c.row][c.col] |= owner << 8;
-}
-
-inline void set_counter(Board& board, Coord const& c, uint16_t counter) {
-  board[c.row][c.col] &= 0x0000FFFF;
-  board[c.row][c.col] |= counter << 16;
-  // cout << setw(8) << setfill('0') << hex << board[c.row][c.col] << endl;
-}
-
-string get_color(int idx) {
-  return Colors[idx % NumColors];
-}
-
-void draw_colored(char c, int color_idx) {
-  cout << "\033[" << get_color(color_idx) << "m" << c << "\033[0m";
-}
-
-Coord rel_coord(Coord const& in, Move dir) {
-	switch (dir) {
-		case Move::Up:    return Coord(in.row - 1, in.col);
-		case Move::Down:  return Coord(in.row + 1, in.col);
-		case Move::Left:  return Coord(in.row, in.col - 1);
-		case Move::Right: return Coord(in.row, in.col + 1);
-		case Move::None:  return Coord(in.row, in.col);
-	}
-}
-
-Move rel_dir(Coord const& from, Coord const& to) {
-	for (auto const& m : AllMoves) {
-		if (to == rel_coord(from, m)) return m;
-	}
-	return Move::None;
-}
-
-void draw_board(GameState const& state) {
-	auto const& board = state.board;
-
-	vector<vector<pair<char, int>>> to_draw;
-	to_draw.resize(board.size());
-	for (auto& row : to_draw) row.resize(board.front().size());
-
-  for (int i = 0; i < board.size(); ++i) {
-    for (int j = 0; j < board[i].size(); ++j) {
-      Coord c(i, j);
-			if (get_is_empty(board, c)) {
-				to_draw[i][j] = make_pair('_', NumColors-1);
-			} else if (get_flag(board, c, OccupierFlag::Player)) {
-				to_draw[i][j] = make_pair('0' + get_owner(board, c), get_owner(board, c));
-			} else if (get_flag(board, c, OccupierFlag::Food)) {
-				to_draw[i][j] = make_pair('*', 1);
-			} else {
-				to_draw[i][j] = make_pair('?', NumColors-1);
-			}
-    }
-  }
-
-	for (auto const& snake : state.snakes) {
-		Coord h(snake.head().row, snake.head().col);
-		auto prev = h;
-		for (auto it = snake.coords.begin()+1; it != snake.coords.end(); ++it) {
-			switch (rel_dir(*it, prev)) {
-				case Move::Up:    to_draw[it->row][it->col].first = '^'; break;
-				case Move::Down:  to_draw[it->row][it->col].first = 'v'; break;
-				case Move::Left:  to_draw[it->row][it->col].first = '<'; break;
-				case Move::Right: to_draw[it->row][it->col].first = '>'; break;
-				default: break;
-			}
-			prev = *it;
-		}
-		to_draw[h.row][h.col] = make_pair('0' + get_owner(board, h), get_owner(board, h));
-	}
-
-	for (int i = 0; i < board.size(); ++i) {
-		for (int j = 0; j < board[i].size(); ++j) {
-			draw_colored(to_draw[i][j].first, to_draw[i][j].second);
-		}
-		cout << endl;
-	}
-}
-
-void draw(GameState const& state) {
-	int i = 0;
-	for (auto const& snake : state.snakes) {
-		cout << i++ << ": " << snake.health << " ";
-	}
-  cout << endl;
-  draw_board(state);
-}
-
-void add_snake(GameState& state, Coord const& c, int length, int food) {
-//  int idx = state.heads.size();
-//  state.heads.push_back(c);
-//  state.food_left.push_back(food);
-//  set_occupier(state.board, state.heads[idx], Snake);
-//  set_counter(state.board, state.heads[idx], counter);
-}
-
-void stepdown_counter(Board& board) {
-  for (int i = 0; i < board.size(); ++i) {
-    for (int j = 0; j < board[i].size(); ++j) {
-      Coord c(i,j);
-      auto val = get_counter(board, c);
-      if (val > 0) {
-        set_counter(board, c, static_cast<Counter>(val - 1));
-        if (val == 1) {
-          clear_flag(board, c, OccupierFlag::Player);
-        }
-      }
-    }
-  }
-}
-
-void stepdown_food(GameState& state) {
-//  for (int i = 0; i < state.food_left.size(); ++i) {
-//    state.food_left[i]--;
-//  }
-}
-
-inline string move_str(Move const& dir) {
-	switch (dir) {
-		case Move::Up:    return "up";
-		case Move::Down:  return "down";
-		case Move::Left:  return "left";
-		case Move::Right: return "right";
-		case Move::None:  return "none"; // only used for certain death
-	}
-}
-
-// TODO: Deal with collisions, starvation, etc. (all game logic!)
-// TODO: When do you die of starvation? If you have no food at start of move or end?
-GameState run_moves(GameState const& in, vector<Move> const& moves) {
-  GameState out = in;
-
-//  for (int i = 0; i < moves.size(); ++i) {
-//    auto to = rel_coord(in.heads[i], moves[i]);
-//    set_occupier(out.board, to, Snake);
-//    set_owner(out.board, to, i);
-//    set_counter(out.board, to, get_counter(out.board, in.heads[i]) + 1);
-//    out.heads[i] = to;
-//  }
-
-  stepdown_counter(out.board);
-  stepdown_food(out);
-
-  return out;
-}
-
-GameState random_step(GameState const& in) {
-  return run_moves(in, { Move::Down });
-}
-
-void simulate() {
-	auto state = GameState(SIM_ROWS, SIM_COLS);
-	add_snake(state, Coord(0,0), 3, 100);
-	set_flag(state.board, Coord(5, 8), OccupierFlag::Food);
-
-	draw(state);
-
-	state = random_step(state);
-
-	draw(state);
-
-	state = random_step(state);
-
-	draw(state);
-
-	state = random_step(state);
-
-	draw(state);
-
-	state = random_step(state);
-
-	draw(state);
-
-	state = random_step(state);
-
-	draw(state);
-}
 
 Snake get_snake(GameState const& state, string const& id) {
 	for (auto const& s : state.snakes) {
@@ -418,18 +133,6 @@ void filter_body_collisions(GameState const& state, Moves& moves) {
 		}
 	}
 	moves = filtered;
-}
-
-inline int taxicab_dist(Coord const& a, Coord const& b) {
-	return abs(a.row - b.row) + abs(a.col - b.col);
-}
-
-bool in_bounds(Coord const& a, GameState const& state) {
-	if (a.row < 0) return false;
-	if (a.col < 0) return false;
-	if (a.row >= state.rows) return false;
-	if (a.col >= state.cols) return false;
-	return true;
 }
 
 // Valid children are:
@@ -809,6 +512,109 @@ GameState process_state(json const& j) {
 	return state;
 }
 
+// Return a labelled board along with labels of the different areas
+// https://en.wikipedia.org/wiki/Connected-component_labeling
+pair< LabelledBoard, vector<Coords> > connected_areas(GameState const& state) {
+	auto const &board = state.board;
+	LabelledBoard lb = board;
+	for (auto i = 0; i < lb.size(); ++i) {
+		for (auto j = 0; j < lb[i].size(); ++j) {
+			lb[i][j] = INT_MAX;
+		}
+	}
+
+	// First pass -- assign temporary labels
+	int label = 0;
+	map<int, set<int> > label_equiv;
+	for (auto i = 0; i < lb.size(); ++i) {
+		for (auto j = 0; j < lb[i].size(); ++j) {
+			if (get_flag(board, Coord(i, j), OccupierFlag::Player)) continue;
+
+			int north_neighbour_label = INT_MAX;
+			int west_neighbour_label = INT_MAX;
+			int min_neighbour_label = INT_MAX;
+			if (i > 0) {
+				north_neighbour_label = lb[i - 1][j];
+			}
+			if (j > 0) {
+				west_neighbour_label = lb[i][j - 1];
+			}
+			min_neighbour_label = min(north_neighbour_label, west_neighbour_label);
+
+			if (min_neighbour_label < INT_MAX) {
+				if (north_neighbour_label < INT_MAX && north_neighbour_label != min_neighbour_label) {
+					label_equiv[north_neighbour_label].insert(min_neighbour_label);
+				}
+				if (west_neighbour_label < INT_MAX && west_neighbour_label != min_neighbour_label) {
+					label_equiv[west_neighbour_label].insert(min_neighbour_label);
+				}
+				lb[i][j] = min_neighbour_label;
+			} else {
+				lb[i][j] = label;
+				++label;
+			}
+		}
+	}
+
+//	cout << "Initial Equivalents" << endl;
+//	for (auto const& src_label : label_equiv) {
+//		for (auto const& equiv : src_label.second) {
+//			cout << src_label.first << " -> " << equiv << endl;
+//		}
+//	}
+
+	// Reduce the label equivalency to the minimum
+	map<int, int> final_equiv;
+	for (int i = 0; i < label; ++i) {
+		final_equiv[i] = i;
+	}
+	for (auto const& equiv : label_equiv) {
+		int this_equiv = equiv.first;
+		while (!label_equiv[this_equiv].empty()) {
+			this_equiv = *label_equiv[this_equiv].begin();
+		}
+		final_equiv[equiv.first] = this_equiv;
+	}
+
+//	cout << "Finished Equivalents" << endl;
+//	for (auto const& eq : final_equiv) {
+//		cout << eq.first << " -> " << eq.second << endl;
+//	}
+
+	// Generate label names that are in numerical without skipping values
+	// We have determined which labels are equivalent, but we want to re-map so we don't skip values
+	set<int> equiv_idxs;
+	for (auto const& eq : final_equiv) {
+		equiv_idxs.insert(eq.second);
+	}
+
+	label = 0;
+	map<int, int> final_labels;
+	for (auto const& final_equiv : equiv_idxs) {
+		final_labels[final_equiv] = label++;
+	}
+
+//	cout << "Label Mapping" << endl;
+//	for (auto const& lbs: final_labels) {
+//		cout << lbs.first << " -> " << lbs.second << endl;
+//	}
+
+	// Second pass -- replace labels with equivalents and generate coord lists
+	vector<Coords> areas;
+	for (auto i = 0; i < lb.size(); ++i) {
+		for (auto j = 0; j < lb[i].size(); ++j) {
+			if (lb[i][j] == INT_MAX) continue;
+
+			int final_label = final_labels[final_equiv[lb[i][j]]];
+			lb[i][j] = final_label;
+			if (final_label >= areas.size()) areas.resize(final_label+1);
+			areas[final_label].push_back(Coord(i,j));
+		}
+	}
+
+	return make_pair(lb, areas);
+}
+
 void server(int port) {
 	Server server;
 
@@ -842,6 +648,9 @@ void server(int port) {
 
 		auto state = process_state(j_in);
 		draw(state);
+
+		auto ccs = connected_areas(state);
+		draw_labels(ccs.first);
 
 		json j_out;
 		string taunt;
