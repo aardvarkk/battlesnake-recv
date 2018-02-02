@@ -675,8 +675,8 @@ void server(int port) {
 
 int main(int argc, const char* argv[]) {
 	int port = 5000;
-	if (getenv("$PORT")) {
-		stringstream ss(getenv("$PORT"));
+	if (argc > 1) {
+		stringstream ss(argv[1]);
 		ss >> port;
 	}
 	server(port);
