@@ -1,1 +1,1 @@
-web: ./my-battlesnake 80
+web: ./my-battlesnake
