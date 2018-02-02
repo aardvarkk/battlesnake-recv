@@ -1,3 +1,5 @@
+#include <climits>
+
 #include "draw.h"
 #include "util.h"
 
