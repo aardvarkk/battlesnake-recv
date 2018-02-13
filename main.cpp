@@ -327,24 +327,6 @@ int accessible_area(GameState const &const_state, Coord const& start) {
 	return area;
 }
 
-// For each of the moves, flood fill and count the area available in that direction
-// If the area isn't big enough to hold our length, don't go into it
-map<Move, int> filter_inadequate_areas(GameState const& state, Moves& moves) {
-	map<Move, int> move_food_areas;
-	Moves filtered;
-	for (auto const& m : moves) {
-		auto area = accessible_area(state, rel_coord(state.me.head(), m));
-		move_food_areas[m] = area;
-		if (area < state.me.length()) {
-			cout << "Can't move " << move_str(m) << " since we can't fit length " << state.me.length() << " in area " << area << endl;
-		} else {
-			filtered.insert(m);
-		}
-	}
-	moves = filtered;
-	return move_food_areas;
-}
-
 Move check_last_resorts(Moves const& moves) {
 	if (moves.empty()) {
 		cout << "No remaining moves!" << endl;
@@ -418,6 +400,55 @@ Move get_tight_body_move(
 	}
 }
 
+// Go through given move areas and pick the one with the most area
+Move space_fill_move_by_area(map<Move, int> const& move_areas) {
+	int max_area = 0;
+	Moves choosable;
+	choosable.insert(Move::None);
+	for (pair<Move, int> const& pr : move_areas) {
+		if (pr.second > max_area) {
+			max_area = pr.second;
+			choosable.clear();
+			choosable.insert(pr.first);
+			cout << "Found better case of area " << max_area << " if we move " << move_str(pr.first) << endl;
+		} else if (pr.second == max_area) {
+			cout << "Tie for best area if we move " << move_str(pr.first) << endl;
+			choosable.insert(pr.first);
+		}
+	}
+
+	if (choosable.size() == 1) {
+		cout << "Only one space fill move by area -- choosing it!" << endl;
+		return *choosable.begin();
+	} else {
+		cout << "Multiple moves have area for space fill, so choosing randomly" << endl;
+		return random_move(choosable);
+	}
+}
+
+map<Move, int> calculate_move_areas(GameState const& state, Moves const& moves) {
+	map<Move, int> move_areas;
+	for (auto const& m : moves) {
+		auto area = accessible_area(state, rel_coord(state.me.head(), m));
+		move_areas[m] = area;
+	}
+	return move_areas;
+}
+
+// For each of the moves, flood fill and count the area available in that direction
+// If the area isn't big enough to hold our length, don't go into it
+void filter_inadequate_areas(GameState const& state, map<Move, int> const& move_areas, Moves& moves) {
+	Moves filtered;
+	for (auto const& pr : move_areas) {
+		if (pr.second < state.me.length()) {
+			cout << "Can't move " << move_str(pr.first) << " since we can't fit length " << state.me.length() << " in area " << pr.second << endl;
+		} else {
+			filtered.insert(pr.first);
+		}
+	}
+	moves = filtered;
+}
+
 Move get_move(GameState const& state) {
 	// Start by considering all possible moves
 	Moves moves = AllMoves;
@@ -445,29 +476,12 @@ Move get_move(GameState const& state) {
 		moves = pre_head;
 	}
 
-	{
-		auto move_areas = filter_inadequate_areas(state, moves);
-
-		// We don't think we have enough room, so we need to get smart...
-		if (moves.empty()) {
-			cout << "Don't have enough room to move, stalling..." << endl;
-
-			// Go through all possible moves and pick the one with the most area
-			Move chosen = Move::None;
-			int max_area = 0;
-			for (pair<Move, int> const& pr : move_areas) {
-				if (pr.second > max_area) {
-					max_area = pr.second;
-					chosen = pr.first;
-					cout << "Found better case of area " << max_area << " if we move " << move_str(pr.first) << endl;
-				} else if (pr.second == max_area) {
-					// TODO: If there's a tie, give it to the one that's... tightest to our body? Has least connectivity?
-					cout << "Tie for best area if we move " << move_str(pr.first) << endl;
-				}
-			}
-
-			return chosen;
-		}
+	// Don't knowingly enter areas that we can't fit into
+	auto move_areas = calculate_move_areas(state, moves);
+	filter_inadequate_areas(state, move_areas, moves);
+	if (moves.empty()) {
+		cout << "Don't have enough room to move, stalling..." << endl;
+		return space_fill_move_by_area(move_areas);
 	}
 
 	// Calculate best-case distance to food for each move remaining
