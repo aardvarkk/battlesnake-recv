@@ -15,6 +15,8 @@
 // - If unable to access food, check HOW MANY TURNS until we can and then see where the newly "opened" square is
 //  - Make it a goal to get to that square with exactly the right number of turns left?
 
+// - If enemy snake is "committed" to a line we can cut off in several moves, cut them off!
+
 // - If we can limit the opponent area severely, do it (i.e. lock them against a wall if possible)
 
 // - If all players are too far away from food to live (and we have enough), let them starve and DON'T eat the food
@@ -28,9 +30,6 @@
 
 // - We'll surround food with our own body such that once we get it we have nowhere to go *after*
 // It's OK to leave food until near-starvation, but we have to make damn sure we can get OUT after getting the food!
-
-// - Have no logic for head collisions
-// - Strongly avoid "head" spaces that can be moved to by other snakes if they're longer than us (they won't necessarily move there, though)
 
 // - Subtract a value from the "counter" to see how many turns we have to "stall" until we'd get full access to different areas
 
@@ -65,6 +64,10 @@
 // - Really, we're trying to maximize our turns remaining while minimizing everybody else's
 //  - Maximum of turns remaining is just health remaining -- aren't really guaranteed any more than that
 //  - Minimum is 0 (no possible move left to not die on the next turn)
+
+// - Don't enter areas where you're liable to be "cut off", even if you seem to have enough area to be contained
+//  - Area with lots of "cut vertices" or "articulation points" would be problematic if your opponent can reach them first
+//  - TRY to reach articulation points before your opponent if you can cut them off?
 
 // - Random...
 // Flood fill out for min travellable dist check (ignore any movement of own tail? and other players and make sure we can exit any halls we enter)
@@ -342,16 +345,12 @@ map<Move, int> filter_inadequate_areas(GameState const& state, Moves& moves) {
 	return move_food_areas;
 }
 
-Move check_last_resorts(Moves const& moves, string& taunt) {
-	taunt.clear();
-
+Move check_last_resorts(Moves const& moves) {
 	if (moves.empty()) {
 		cout << "No remaining moves!" << endl;
-		taunt = "Arghhh!";
 		return random_move(AllMoves);
 	} else if (moves.size() == 1) {
 		cout << "Only one non-death move, so we'll make it" << endl;
-		taunt = "Where there's a will, there's a way!";
 		return *moves.begin();
 	}
 
@@ -360,14 +359,14 @@ Move check_last_resorts(Moves const& moves, string& taunt) {
 
 bool is_longest_snake(Snake const& snake, GameState const& state) {
 	for (auto const& other_snake : state.snakes) {
-		if (other_snake.id != snake.id && other_snake.length() > snake.length()) return false;
+		if (other_snake.id != snake.id && other_snake.length() >= snake.length()) return false;
 	}
 	return true;
 }
 
 bool is_healthiest_snake(Snake const& snake, GameState const& state) {
 	for (auto const& other_snake : state.snakes) {
-		if (other_snake.id != snake.id && other_snake.health > snake.health) return false;
+		if (other_snake.id != snake.id && other_snake.health >= snake.health) return false;
 	}
 	return true;
 }
@@ -388,20 +387,51 @@ int get_move_fatness(Snake const& snake, Move const& m, GameState const& const_s
 	return (max_r - min_r + 1) * (max_c - min_c + 1);
 }
 
-Move get_move(GameState const& state, string& taunt) {
+Move get_tight_body_move(
+	GameState const& state,
+	Moves const& moves,
+	map<Move, int> const& move_food_dists
+) {
+	auto cur_fatness = get_move_fatness(state.me, Move::None, state);
+
+	// Tighten the body...
+	Move chosen = Move::None;
+	int min_fatness = INT_MAX;
+	int min_dist_to_food = INT_MAX; // Secondary criteria
+	for (auto const& m : moves) {
+		auto fatness = get_move_fatness(state.me, m, state);
+		if (fatness < min_fatness) {
+			min_fatness = fatness;
+			chosen = m;
+			cout << "Found new best fatness of " << min_fatness << " by going " << move_str(m) << endl;
+		} else if (fatness == min_fatness && move_food_dists.at(m) < min_dist_to_food) {
+			min_dist_to_food = move_food_dists.at(m);
+			cout << "Found same fatness of " << min_fatness << " but with new best food dist of " << min_dist_to_food << endl;
+			chosen = m;
+		}
+	}
+
+	if (min_fatness >= cur_fatness) {
+		return Move::None;
+	} else {
+		return chosen;
+	}
+}
+
+Move get_move(GameState const& state) {
 	// Start by considering all possible moves
 	Moves moves = AllMoves;
 
 	// Remove any moves that would cause us a guaranteed loss (wall collisions and body collisions)
 	filter_wall_collisions(state, moves);
 	{
-		auto chosen = check_last_resorts(moves, taunt);
+		auto chosen = check_last_resorts(moves);
 		if (chosen != Move::None) return chosen;
 	}
 
 	filter_body_collisions(state, moves);
 	{
-		auto chosen = check_last_resorts(moves, taunt);
+		auto chosen = check_last_resorts(moves);
 		if (chosen != Move::None) return chosen;
 	}
 
@@ -416,14 +446,16 @@ Move get_move(GameState const& state, string& taunt) {
 	}
 
 	{
-		auto move_food_areas = filter_inadequate_areas(state, moves);
+		auto move_areas = filter_inadequate_areas(state, moves);
 
 		// We don't think we have enough room, so we need to get smart...
 		if (moves.empty()) {
+			cout << "Don't have enough room to move, stalling..." << endl;
+
 			// Go through all possible moves and pick the one with the most area
 			Move chosen = Move::None;
 			int max_area = 0;
-			for (pair<Move, int> const& pr : move_food_areas) {
+			for (pair<Move, int> const& pr : move_areas) {
 				if (pr.second > max_area) {
 					max_area = pr.second;
 					chosen = pr.first;
@@ -434,12 +466,12 @@ Move get_move(GameState const& state, string& taunt) {
 				}
 			}
 
-			taunt = "Making it up as I go along...";
 			return chosen;
 		}
 	}
 
 	// Calculate best-case distance to food for each move remaining
+	// We'll use this for several calculations
 	map<Move, int> move_food_dists;
 	for (auto const& m : moves) {
 		move_food_dists[m] = min_dist_to_food(rel_coord(state.me.head(), m), state);
@@ -453,12 +485,12 @@ Move get_move(GameState const& state, string& taunt) {
 
 		// We have no good options (very likely to die, but tiny chance of something else...)
 		if (moves.empty()) {
-			taunt = "Here goes nothing!";
+			cout << "We'll starve no matter which move we make, so picking a random one..." << endl;
 			return random_move(pre);
 		}
 		// We only have one possible move, so do it
 		else if (moves.size() == 1) {
-			taunt = "You leave me no choice...";
+			cout << "Only one move to avoid starvation, so using it!" << endl;
 			return *moves.begin();
 		}
 	}
@@ -467,38 +499,20 @@ Move get_move(GameState const& state, string& taunt) {
 
 	// If we're the longest snake with the most health...
 	if (is_longest_snake(state.me, state) && is_healthiest_snake(state.me, state)) {
-		cout << "We are in great shape... longest and healthiest, so keeping body tight" << endl;
+		cout << "We are in great shape... longest and healthiest" << endl;
 
-		auto cur_fatness = get_move_fatness(state.me, Move::None, state);
-
-		// Tighten the body...
-		Move chosen = Move::None;
-		int min_fatness = INT_MAX;
-		int min_dist_to_food = INT_MAX; // Secondary criteria
-		for (auto const& m : moves) {
-			auto fatness = get_move_fatness(state.me, m, state);
-			if (fatness < min_fatness) {
-				min_fatness = fatness;
-				chosen = m;
-				cout << "Found new best fatness of " << min_fatness << " by going " << move_str(m) << endl;
-			} else if (fatness == min_fatness && move_food_dists[m] < min_dist_to_food) {
-				min_dist_to_food = move_food_dists[m];
-				cout << "Found same fatness of " << min_fatness << " but with new best food dist of " << min_dist_to_food << endl;
-				chosen = m;
-			}
-		}
-
-		if (min_fatness >= cur_fatness) {
-			cout << "No improvement in fatness for this move..." << endl;
-
-			// Continue on, where we'll pick a move that brings us closer to food
+		cout << "Targeting keeping a tight body" << endl;
+		auto tight_body_move = get_tight_body_move(state, moves, move_food_dists);
+		if (tight_body_move != Move::None) {
+			cout << "Using a tight body move we found!" << endl;
+			return tight_body_move;
 		} else {
-			taunt = "Keeping it tight!";
-			return chosen;
+			cout << "No improvement in fatness move found, so choosing random move!" << endl;
+			return random_move(moves);
 		}
-	}
+	} else {
+		cout << "We are not longest and healthiest, so targeting food!" << endl;
 
-	if (true /*me.length() < 8*/) {
 		int min_dist = INT_MAX;
 		Moves food_moves;
 		for (pair<Move, int> const& pr : move_food_dists) {
@@ -512,10 +526,10 @@ Move get_move(GameState const& state, string& taunt) {
 		}
 
 		if (food_moves.size() == 1) {
-			taunt = "I KNOW how to eat!";
+			cout << "Chose single best food move" << endl;
 			return *food_moves.begin();
 		} else {
-			taunt = "Eat the FOOD, TINA!";
+			cout << "Chose random best food move" << endl;
 			return random_move(food_moves);
 		}
 	}
@@ -709,9 +723,7 @@ void server(int port) {
 		draw_labels(ccs.first);
 
 		json j_out;
-		string taunt;
-		j_out["move"] = move_str(get_move(state, taunt));
-		j_out["taunt"] = taunt;
+		j_out["move"] = move_str(get_move(state));
 		res.status = 200;
 		res.headers = { { "Content-Type", "application/json" } };
 		res.body = j_out.dump();
