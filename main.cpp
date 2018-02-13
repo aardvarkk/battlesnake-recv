@@ -136,6 +136,46 @@ void filter_body_collisions(GameState const& state, Moves& moves) {
 	moves = filtered;
 }
 
+void filter_possible_head_collisions(GameState const& state, Moves& moves) {
+	Moves filtered;
+	for (auto const& m : moves) {
+
+		// Get the next location of our head given this move
+		auto our_next_head = rel_coord(state.me.head(), m);
+		bool possible_collision = false;
+
+		// Go through every snake
+		for (auto const& s : state.snakes) {
+
+			// Don't compare to ourselves
+			if (s.id == state.my_id) continue;
+
+			// Only care about snakes >= our length
+			if (s.length() < state.me.length()) continue;
+
+			// If any of their head moves would collide with our head move, filter it out
+			for (auto const& their_move : AllMoves) {
+				auto their_next_head = rel_coord(s.head(), their_move);
+				if (our_next_head == their_next_head) {
+					cout << "Ignoring move " << move_str(m) << " because we might collide with longer snake head" << endl;
+					possible_collision = true;
+					break;
+				}
+			}
+
+			if (possible_collision) {
+				break;
+			}
+		}
+
+		// No possible collisions
+		if (!possible_collision) {
+			filtered.insert(m);
+		}
+	}
+	moves = filtered;
+}
+
 // Valid children are:
 // 1. Not already visited
 // 2. Not occupied by a non-tail player
@@ -363,6 +403,16 @@ Move get_move(GameState const& state, string& taunt) {
 	{
 		auto chosen = check_last_resorts(moves, taunt);
 		if (chosen != Move::None) return chosen;
+	}
+
+	// Filter out head collisions
+	// If all we have remaining are head collisions, though, just ignore them!
+	// TODO: Probabilistically choose the most likely to be empty?
+	auto pre_head = moves;
+	filter_possible_head_collisions(state, moves);
+	if (moves.empty()) {
+		cout << "Filtered out all moves with possible head collisions, so ignoring them..." << endl;
+		moves = pre_head;
 	}
 
 	{
@@ -629,7 +679,12 @@ void server(int port) {
 
 		json j_out;
 		j_out["color"] = "#00ff00";
+		j_out["secondary_color"] = "#000000";
+		j_out["head_url"] = "http://placecage.com/c/100/100";
 		j_out["name"] = "clifford";
+		j_out["taunt"] = "the big red dog";
+		j_out["head_type"] = "pixel";
+		j_out["tail_type"] = "pixel";
 		res.status = 200;
 		res.headers = { { "Content-Type", "application/json" } };
 		res.body = j_out.dump();
