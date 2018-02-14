@@ -14,6 +14,8 @@ public:
 	static const uint8_t Player  = 1 << 0;
 	static const uint8_t Food    = 1 << 1;
 	static const uint8_t Visited = 1 << 2;
+	static const uint8_t Area    = 1 << 3;
+	static const uint8_t CutVert = 1 << 4;
 };
 
 // Byte 1 -- by index in snakes
@@ -32,13 +34,16 @@ struct Coord {
 		return this->row == other.row && this->col == other.col;
 	}
 	bool operator<(Coord const& other) const {
-		return this->row < other.row && this->col < other.col;
+		if (this->row < other.row) return true;
+		if (this->row == other.row) return this->col < other.col;
+		return false;
 	}
 
 	int row;
 	int col;
 };
 
+typedef std::set<Coord>    UniqCoords;
 typedef std::vector<Coord> Coords;
 
 inline std::ostream& operator<<(std::ostream& os, const Coord& c)
@@ -65,7 +70,7 @@ struct Snake {
 	Coord tail() const { return coords.back(); }
 	int length() const { return coords.size(); }
 	int drawn_length() const {
-		std::set<Coord> uniq;
+		UniqCoords uniq;
 		for (auto const& c : coords) uniq.insert(c);
 		return uniq.size();
 	}

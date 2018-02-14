@@ -426,11 +426,153 @@ Move space_fill_move_by_area(map<Move, int> const& move_areas) {
 	}
 }
 
+// Return a labelled board along with labels of the different areas
+// https://en.wikipedia.org/wiki/Connected-component_labeling
+pair< LabelledBoard, vector<Coords> > connected_areas(GameState const& state) {
+	auto const &board = state.board;
+	LabelledBoard lb = board;
+	for (auto i = 0; i < lb.size(); ++i) {
+		for (auto j = 0; j < lb[i].size(); ++j) {
+			lb[i][j] = INT_MAX;
+		}
+	}
+
+	// First pass -- assign temporary labels
+	int label = 0;
+	map<int, set<int> > label_equiv;
+	for (auto i = 0; i < lb.size(); ++i) {
+		for (auto j = 0; j < lb[i].size(); ++j) {
+			if (get_flag(board, Coord(i, j), OccupierFlag::Player)) continue;
+
+			int north_neighbour_label = INT_MAX;
+			int west_neighbour_label = INT_MAX;
+			int min_neighbour_label = INT_MAX;
+			if (i > 0) {
+				north_neighbour_label = lb[i - 1][j];
+			}
+			if (j > 0) {
+				west_neighbour_label = lb[i][j - 1];
+			}
+			min_neighbour_label = min(north_neighbour_label, west_neighbour_label);
+
+			if (min_neighbour_label < INT_MAX) {
+				if (north_neighbour_label < INT_MAX && north_neighbour_label != min_neighbour_label) {
+					label_equiv[north_neighbour_label].insert(min_neighbour_label);
+				}
+				if (west_neighbour_label < INT_MAX && west_neighbour_label != min_neighbour_label) {
+					label_equiv[west_neighbour_label].insert(min_neighbour_label);
+				}
+				lb[i][j] = min_neighbour_label;
+			} else {
+				lb[i][j] = label;
+				++label;
+			}
+		}
+	}
+
+//	cout << "Initial Equivalents" << endl;
+//	for (auto const& src_label : label_equiv) {
+//		for (auto const& equiv : src_label.second) {
+//			cout << src_label.first << " -> " << equiv << endl;
+//		}
+//	}
+
+	// Reduce the label equivalency to the minimum
+	map<int, int> final_equiv;
+	for (int i = 0; i < label; ++i) {
+		final_equiv[i] = i;
+	}
+	for (auto const& equiv : label_equiv) {
+		int this_equiv = equiv.first;
+		while (!label_equiv[this_equiv].empty()) {
+			this_equiv = *label_equiv[this_equiv].begin();
+		}
+		final_equiv[equiv.first] = this_equiv;
+	}
+
+//	cout << "Finished Equivalents" << endl;
+//	for (auto const& eq : final_equiv) {
+//		cout << eq.first << " -> " << eq.second << endl;
+//	}
+
+	// Generate label names that are in numerical without skipping values
+	// We have determined which labels are equivalent, but we want to re-map so we don't skip values
+	set<int> equiv_idxs;
+	for (auto const& eq : final_equiv) {
+		equiv_idxs.insert(eq.second);
+	}
+
+	label = 0;
+	map<int, int> final_labels;
+	for (auto const& final_equiv : equiv_idxs) {
+		final_labels[final_equiv] = label++;
+	}
+
+//	cout << "Label Mapping" << endl;
+//	for (auto const& lbs: final_labels) {
+//		cout << lbs.first << " -> " << lbs.second << endl;
+//	}
+
+	// Second pass -- replace labels with equivalents and generate coord lists
+	vector<Coords> areas;
+	for (auto i = 0; i < lb.size(); ++i) {
+		for (auto j = 0; j < lb[i].size(); ++j) {
+			if (lb[i][j] == INT_MAX) {
+				lb[i][j] = 0;
+				set_flag(lb, i, j, OccupierFlag::Visited);
+				continue;
+			}
+
+			int final_label = final_labels[final_equiv[lb[i][j]]];
+			set_flag(lb, i, j, OccupierFlag::Area);
+			set_owner(lb, i, j, final_label);
+
+			if (final_label >= areas.size()) areas.resize(final_label+1);
+			areas[final_label].push_back(Coord(i,j));
+		}
+	}
+
+	return make_pair(lb, areas);
+}
+
+// Try to calculate articulation points
+// They may not be accurate until we refine them
+// Two possibilities:
+// --- -o-
+// o!o -!-
+// --- -o-
+// where ! is the articulation point
+void possible_articulation_points(GameState const& state, LabelledBoard& lb) {
+	auto const& board = state.board;
+	for (auto i = 0; i < board.size(); ++i) {
+		for (auto j = 0; j < board[i].size(); ++j) {
+			bool ok = in_bounds(i, j, state) && get_is_enterable(board, i, j);
+			if (!ok) continue;
+
+			bool up_ok    = in_bounds(i-1, j,   state) && get_is_enterable(board, i-1, j);
+			bool down_ok  = in_bounds(i+1, j,   state) && get_is_enterable(board, i+1, j);
+			bool left_ok  = in_bounds(i,   j-1, state) && get_is_enterable(board, i,   j-1);
+			bool right_ok = in_bounds(i,   j+1, state) && get_is_enterable(board, i,   j+1);
+
+			bool articulation = (ok && left_ok && right_ok && !up_ok && !down_ok) ||
+				(ok && down_ok && up_ok && !left_ok && !right_ok);
+
+			if (articulation)
+				set_flag(lb, i, j, OccupierFlag::CutVert);
+		}
+	}
+}
+
 // Take the move whose destination has the fewest number of neighbours
 // But make sure we have at least ONE neighbour to continue into!
 Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
 	int min_open_neighbours = INT_MAX;
 	Move best_move = Move::None;
+
+	// Go through each connected area (graph) and find articulation points
+	auto ccs = connected_areas(state);
+	possible_articulation_points(state, ccs.first);
+	draw_labels(ccs.first);
 
 	for (auto const& m : moves) {
 		auto target = rel_coord(state.me.head(), m);
@@ -622,109 +764,6 @@ GameState process_state(json const& j) {
 	return state;
 }
 
-// Return a labelled board along with labels of the different areas
-// https://en.wikipedia.org/wiki/Connected-component_labeling
-pair< LabelledBoard, vector<Coords> > connected_areas(GameState const& state) {
-	auto const &board = state.board;
-	LabelledBoard lb = board;
-	for (auto i = 0; i < lb.size(); ++i) {
-		for (auto j = 0; j < lb[i].size(); ++j) {
-			lb[i][j] = INT_MAX;
-		}
-	}
-
-	// First pass -- assign temporary labels
-	int label = 0;
-	map<int, set<int> > label_equiv;
-	for (auto i = 0; i < lb.size(); ++i) {
-		for (auto j = 0; j < lb[i].size(); ++j) {
-			if (get_flag(board, Coord(i, j), OccupierFlag::Player)) continue;
-
-			int north_neighbour_label = INT_MAX;
-			int west_neighbour_label = INT_MAX;
-			int min_neighbour_label = INT_MAX;
-			if (i > 0) {
-				north_neighbour_label = lb[i - 1][j];
-			}
-			if (j > 0) {
-				west_neighbour_label = lb[i][j - 1];
-			}
-			min_neighbour_label = min(north_neighbour_label, west_neighbour_label);
-
-			if (min_neighbour_label < INT_MAX) {
-				if (north_neighbour_label < INT_MAX && north_neighbour_label != min_neighbour_label) {
-					label_equiv[north_neighbour_label].insert(min_neighbour_label);
-				}
-				if (west_neighbour_label < INT_MAX && west_neighbour_label != min_neighbour_label) {
-					label_equiv[west_neighbour_label].insert(min_neighbour_label);
-				}
-				lb[i][j] = min_neighbour_label;
-			} else {
-				lb[i][j] = label;
-				++label;
-			}
-		}
-	}
-
-//	cout << "Initial Equivalents" << endl;
-//	for (auto const& src_label : label_equiv) {
-//		for (auto const& equiv : src_label.second) {
-//			cout << src_label.first << " -> " << equiv << endl;
-//		}
-//	}
-
-	// Reduce the label equivalency to the minimum
-	map<int, int> final_equiv;
-	for (int i = 0; i < label; ++i) {
-		final_equiv[i] = i;
-	}
-	for (auto const& equiv : label_equiv) {
-		int this_equiv = equiv.first;
-		while (!label_equiv[this_equiv].empty()) {
-			this_equiv = *label_equiv[this_equiv].begin();
-		}
-		final_equiv[equiv.first] = this_equiv;
-	}
-
-//	cout << "Finished Equivalents" << endl;
-//	for (auto const& eq : final_equiv) {
-//		cout << eq.first << " -> " << eq.second << endl;
-//	}
-
-	// Generate label names that are in numerical without skipping values
-	// We have determined which labels are equivalent, but we want to re-map so we don't skip values
-	set<int> equiv_idxs;
-	for (auto const& eq : final_equiv) {
-		equiv_idxs.insert(eq.second);
-	}
-
-	label = 0;
-	map<int, int> final_labels;
-	for (auto const& final_equiv : equiv_idxs) {
-		final_labels[final_equiv] = label++;
-	}
-
-//	cout << "Label Mapping" << endl;
-//	for (auto const& lbs: final_labels) {
-//		cout << lbs.first << " -> " << lbs.second << endl;
-//	}
-
-	// Second pass -- replace labels with equivalents and generate coord lists
-	vector<Coords> areas;
-	for (auto i = 0; i < lb.size(); ++i) {
-		for (auto j = 0; j < lb[i].size(); ++j) {
-			if (lb[i][j] == INT_MAX) continue;
-
-			int final_label = final_labels[final_equiv[lb[i][j]]];
-			lb[i][j] = final_label;
-			if (final_label >= areas.size()) areas.resize(final_label+1);
-			areas[final_label].push_back(Coord(i,j));
-		}
-	}
-
-	return make_pair(lb, areas);
-}
-
 void server(int port) {
 	Server server;
 
@@ -764,8 +803,8 @@ void server(int port) {
 		auto state = process_state(j_in);
 		draw(state);
 
-		auto ccs = connected_areas(state);
-		draw_labels(ccs.first);
+//		auto ccs = connected_areas(state);
+//		draw_labels(ccs.first);
 
 		json j_out;
 		j_out["move"] = move_str(get_move(state));
@@ -786,6 +825,11 @@ void server(int port) {
 }
 
 int main(int argc, const char* argv[]) {
+//	rlimit rl;
+//	getrlimit(RLIMIT_STACK, &rl);
+//	rl.rlim_cur = rl.rlim_max;
+//	setrlimit(RLIMIT_STACK, &rl);
+
 	int port = 5000;
 	if (argc > 1) {
 		stringstream ss(argv[1]);

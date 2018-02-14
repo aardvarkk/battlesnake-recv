@@ -93,11 +93,17 @@ void draw_labels(LabelledBoard const& labels) {
 
 	for (int i = 0; i < labels.size(); ++i) {
 		for (int j = 0; j < labels[i].size(); ++j) {
-			if (labels[i][j] == INT_MAX) {
+			if (get_flag(labels, i, j, OccupierFlag::Visited)) {
 				to_draw[i][j] = make_pair('x', NumColors-1);
 				continue;
 			}
-			to_draw[i][j] = make_pair('0' + labels[i][j], labels[i][j]);
+
+			if (get_flag(labels, i, j, OccupierFlag::CutVert)) {
+				to_draw[i][j] = make_pair('!', get_owner(labels, i, j));
+				continue;
+			}
+			
+			to_draw[i][j] = make_pair('0' + get_owner(labels, i, j), get_owner(labels, i, j));
 		}
 	}
 
