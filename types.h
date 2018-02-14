@@ -31,6 +31,9 @@ struct Coord {
 	bool operator==(Coord const& other) const {
 		return this->row == other.row && this->col == other.col;
 	}
+	bool operator<(Coord const& other) const {
+		return this->row < other.row && this->col < other.col;
+	}
 
 	int row;
 	int col;
@@ -61,6 +64,11 @@ struct Snake {
 	Coord head() const { return coords.front(); }
 	Coord tail() const { return coords.back(); }
 	int length() const { return coords.size(); }
+	int drawn_length() const {
+		std::set<Coord> uniq;
+		for (auto const& c : coords) uniq.insert(c);
+		return uniq.size();
+	}
 };
 
 struct GameState {

@@ -426,6 +426,32 @@ Move space_fill_move_by_area(map<Move, int> const& move_areas) {
 	}
 }
 
+// Take the move whose destination has the fewest number of neighbours
+// But make sure we have at least ONE neighbour to continue into!
+Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
+	int min_open_neighbours = INT_MAX;
+	Move best_move = Move::None;
+
+	for (auto const& m : moves) {
+		auto target = rel_coord(state.me.head(), m);
+
+		int open_neighbours = 0;
+		for (auto const& nm : AllMoves) {
+			auto n = rel_coord(target, nm);
+			if (in_bounds(n, state) && get_is_enterable(state.board, n))
+				open_neighbours++;
+		}
+
+		// Need at least another neighbour (other than our head!) so we can both enter and leave the square
+		if (open_neighbours > 0 && open_neighbours < min_open_neighbours) {
+			best_move = m;
+			min_open_neighbours = open_neighbours;
+		}
+	}
+
+	return best_move;
+}
+
 map<Move, int> calculate_move_areas(GameState const& state, Moves const& moves) {
 	map<Move, int> move_areas;
 	for (auto const& m : moves) {
@@ -453,6 +479,9 @@ Move get_move(GameState const& state) {
 	// Start by considering all possible moves
 	Moves moves = AllMoves;
 
+	// Convenience variable
+	Moves pre_filtered;
+
 	// Remove any moves that would cause us a guaranteed loss (wall collisions and body collisions)
 	filter_wall_collisions(state, moves);
 	{
@@ -469,19 +498,21 @@ Move get_move(GameState const& state) {
 	// Filter out head collisions
 	// If all we have remaining are head collisions, though, just ignore them!
 	// TODO: Probabilistically choose the most likely to be empty?
-	auto pre_head = moves;
+	pre_filtered = moves;
 	filter_possible_head_collisions(state, moves);
 	if (moves.empty()) {
 		cout << "Filtered out all moves with possible head collisions, so ignoring them..." << endl;
-		moves = pre_head;
+		moves = pre_filtered;
 	}
 
 	// Don't knowingly enter areas that we can't fit into
+	pre_filtered = moves;
 	auto move_areas = calculate_move_areas(state, moves);
 	filter_inadequate_areas(state, move_areas, moves);
 	if (moves.empty()) {
 		cout << "Don't have enough room to move, stalling..." << endl;
-		return space_fill_move_by_area(move_areas);
+//		return space_fill_move_by_area(move_areas);
+		return space_fill_by_heuristic(state, pre_filtered);
 	}
 
 	// Calculate best-case distance to food for each move remaining

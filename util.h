@@ -18,6 +18,10 @@ inline bool get_is_empty(Board const& board, Coord const& c) {
 	return !(board[c.row][c.col] & 0x000000FF);
 }
 
+inline bool get_is_enterable(Board const& board, Coord const& c) {
+	return (board[c.row][c.col] & 0x000000FF) != OccupierFlag::Player;
+}
+
 inline void clear_flag(Board& board, Coord const& c, int flag) {
 	board[c.row][c.col] |= ~flag;
 }
