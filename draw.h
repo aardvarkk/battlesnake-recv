@@ -7,3 +7,4 @@ void draw_colored(char c, int color_idx);
 void draw_board(GameState const& state);
 void draw(GameState const& state);
 void draw_labels(LabelledBoard const& labels);
+void draw_voronoi(Voronoi const& v);

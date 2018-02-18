@@ -11,20 +11,43 @@ typedef int Square;
 // Byte 0 -- what occupies a space
 class OccupierFlag {
 public:
-	static const uint8_t Player  = 1 << 0;
-	static const uint8_t Food    = 1 << 1;
-	static const uint8_t Visited = 1 << 2;
-	static const uint8_t Area    = 1 << 3;
-	static const uint8_t CutVert = 1 << 4;
+	static const uint8_t Player       = 1 << 0;
+	static const uint8_t Food         = 1 << 1;
+	static const uint8_t Visited      = 1 << 2;
+	static const uint8_t Accessible   = 1 << 3;
+	static const uint8_t Inaccessible = 1 << 4;
+	static const uint8_t CutVert      = 1 << 5;
 };
 
 // Byte 1 -- by index in snakes
 typedef uint8_t Owner;
 
+// Flag to indicate shared or non-single ownership
+const uint8_t Unowned = 0xFF;
+
 // Bytes 2-3 -- helps to progress board state
 typedef uint16_t Counter;
 
-typedef std::vector< std::vector<Square> > Board;
+class Board : public std::vector< std::vector<Square> >
+{
+public:
+	Board() : std::vector< std::vector<Square> >() {}
+	Board(int rows, int cols, Square val = 0) {
+		resize(rows);
+		for (auto& row : *this) {
+			row = std::vector<Square>(cols, val);
+		}
+	}
+
+	void set(Square val) {
+		for (auto& row : *this) {
+			for (auto& col : row) {
+				col = val;
+			}
+		}
+	}
+};
+
 typedef Board LabelledBoard;
 
 struct Coord {
@@ -94,3 +117,17 @@ struct GameState {
 };
 
 typedef std::map<std::string, GameState> GameStates;
+
+typedef std::vector< std::vector<Coords> > Tracks;
+
+struct SnakeBoard {
+	Coord head; // starting location for this snake
+	Board dists; // counter is minimum distance for snake to get to each board square
+	Board board; // counter is snake length for other snakes on the board
+	Tracks tracks; // possible path to get to each of the squares on the board in min turns
+};
+
+struct Voronoi {
+	Board board; // Overall board showing min distance to each point
+	std::vector<SnakeBoard> snake_boards; // Boards showing distance to each square per-snake
+};

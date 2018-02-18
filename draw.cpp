@@ -93,7 +93,7 @@ void draw_labels(LabelledBoard const& labels) {
 
 	for (int i = 0; i < labels.size(); ++i) {
 		for (int j = 0; j < labels[i].size(); ++j) {
-			if (get_flag(labels, i, j, OccupierFlag::Visited)) {
+			if (get_flag(labels, i, j, OccupierFlag::Inaccessible)) {
 				to_draw[i][j] = make_pair('x', NumColors-1);
 				continue;
 			}
@@ -102,13 +102,40 @@ void draw_labels(LabelledBoard const& labels) {
 				to_draw[i][j] = make_pair('!', get_owner(labels, i, j));
 				continue;
 			}
-			
+
 			to_draw[i][j] = make_pair('0' + get_owner(labels, i, j), get_owner(labels, i, j));
 		}
 	}
 
 	for (int i = 0; i < labels.size(); ++i) {
 		for (int j = 0; j < labels[i].size(); ++j) {
+			draw_colored(to_draw[i][j].first, to_draw[i][j].second);
+		}
+		cout << endl;
+	}
+}
+
+void draw_voronoi(Voronoi const& v)
+{
+	vector<vector<pair<char, int>>> to_draw;
+	to_draw.resize(v.board.size());
+	for (auto& row : to_draw) row.resize(v.board.front().size());
+
+	for (int i = 0; i < v.board.size(); ++i) {
+		for (int j = 0; j < v.board[i].size(); ++j) {
+			if (get_flag(v.board, i, j, OccupierFlag::Inaccessible)) {
+				to_draw[i][j] = make_pair('x', NumColors-1);
+				continue;
+			}
+
+			uint8_t owner = get_owner(v.board, i, j);
+			int color_idx = owner == Unowned ? NumColors-1 : owner;
+			to_draw[i][j] = make_pair('0' + get_counter(v.board, i, j), color_idx);
+		}
+	}
+
+	for (int i = 0; i < v.board.size(); ++i) {
+		for (int j = 0; j < v.board[i].size(); ++j) {
 			draw_colored(to_draw[i][j].first, to_draw[i][j].second);
 		}
 		cout << endl;
