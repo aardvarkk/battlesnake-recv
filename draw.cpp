@@ -75,6 +75,7 @@ void draw_board(GameState const& state) {
 		}
 		cout << endl;
 	}
+	cout << endl;
 }
 
 void draw(GameState const& state) {
@@ -113,6 +114,7 @@ void draw_labels(LabelledBoard const& labels) {
 		}
 		cout << endl;
 	}
+	cout << endl;
 }
 
 void draw_voronoi(Voronoi const& v)
@@ -140,4 +142,5 @@ void draw_voronoi(Voronoi const& v)
 		}
 		cout << endl;
 	}
+	cout << endl;
 }

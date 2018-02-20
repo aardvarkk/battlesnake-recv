@@ -88,11 +88,8 @@ using namespace httplib;
 using json = nlohmann::json;
 
 #include "draw.h"
-#include "types.h"
 #include "util.h"
-
-const int SIM_ROWS = 20;
-const int SIM_COLS = 20;
+#include "voronoi.h"
 
 default_random_engine _rng;
 
@@ -428,8 +425,7 @@ Move space_fill_move_by_area(map<Move, int> const& move_areas) {
 
 // Return a labelled board along with labels of the different areas
 // https://en.wikipedia.org/wiki/Connected-component_labeling
-pair< LabelledBoard, vector<Coords> > connected_areas(GameState const& state) {
-	auto const &board = state.board;
+pair< LabelledBoard, vector<Coords> > connected_areas(Board const& board) {
 	LabelledBoard lb = board;
 	for (auto i = 0; i < lb.size(); ++i) {
 		for (auto j = 0; j < lb[i].size(); ++j) {
@@ -442,7 +438,7 @@ pair< LabelledBoard, vector<Coords> > connected_areas(GameState const& state) {
 	map<int, set<int> > label_equiv;
 	for (auto i = 0; i < lb.size(); ++i) {
 		for (auto j = 0; j < lb[i].size(); ++j) {
-			if (get_flag(board, Coord(i, j), OccupierFlag::Player)) continue;
+			if (!get_is_enterable(board, i, j)) continue;
 
 			int north_neighbour_label = INT_MAX;
 			int west_neighbour_label = INT_MAX;
@@ -563,35 +559,79 @@ void possible_articulation_points(GameState const& state, LabelledBoard& lb) {
 	}
 }
 
+struct ArticulationResult {
+	ArticulationResult() : articulation(false), containing_area(0), open_neighbours(0) {}
+	Move move;
+	bool articulation;
+	int containing_area;
+	int open_neighbours;
+};
+
+bool is_articulation(Board const& board, LabelledBoard const& base, Coord const& c) {
+	// Copy the board
+	Board board_copy = board;
+
+	// Fake that the position in question is occupied
+	set_flag(board_copy, c, OccupierFlag::Inaccessible);
+
+	// Calculate connected components
+	auto cas = connected_areas(board_copy);
+	draw_labels(cas.first);
+
+	// Check all neighbours of the coord
+	// If we've changed any area indices (neighbours have been renumbered) then this was an articulation point
+	for (auto const& m : AllMoves) {
+		auto n = rel_coord(c, m);
+		if (in_bounds(n, base.size(), base.front().size()) &&
+			get_owner(base, n) != get_owner(cas.first, n))
+			return true;
+	}
+
+	return false;
+}
+
 // Take the move whose destination has the fewest number of neighbours
 // But make sure we have at least ONE neighbour to continue into!
 Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
-	int min_open_neighbours = INT_MAX;
-	Move best_move = Move::None;
-
 	// Go through each connected area (graph) and find articulation points
-	auto ccs = connected_areas(state);
-	possible_articulation_points(state, ccs.first);
-	draw_labels(ccs.first);
+	auto ccs = connected_areas(state.board);
+//	possible_articulation_points(state, ccs.first);
+//	draw_labels(ccs.first);
+
+	// Accessible areas for different moves
+	vector<ArticulationResult> articulation_results;
 
 	for (auto const& m : moves) {
 		auto target = rel_coord(state.me.head(), m);
 
-		int open_neighbours = 0;
+		ArticulationResult res;
 		for (auto const& nm : AllMoves) {
 			auto n = rel_coord(target, nm);
 			if (in_bounds(n, state) && get_is_enterable(state.board, n))
-				open_neighbours++;
+				res.open_neighbours++;
 		}
 
-		// Need at least another neighbour (other than our head!) so we can both enter and leave the square
-		if (open_neighbours > 0 && open_neighbours < min_open_neighbours) {
-			best_move = m;
-			min_open_neighbours = open_neighbours;
-		}
+		res.move = m;
+		res.articulation = is_articulation(state.board, ccs.first, target);
+		res.containing_area = ccs.second[get_counter(ccs.first, target)].size();
+		articulation_results.push_back(res);
 	}
 
-	return best_move;
+	// Sort first by articulation points (don't want to take them!), and then by resulting area (want max!)
+	sort(articulation_results.begin(), articulation_results.end(),
+			 [](ArticulationResult const& a, ArticulationResult const& b) {
+				 if (!a.articulation && b.articulation) return true;
+				 else if (a.articulation && !b.articulation) return false;
+				 else if (a.containing_area != b.containing_area) return a.containing_area > b.containing_area;
+				 else return a.open_neighbours < b.open_neighbours;
+	});
+
+	cout << "Sorted space fill results" << endl;
+	for (auto const& r : articulation_results) {
+		cout << move_str(r.move) << " articulation " << r.articulation << " in area " << r.containing_area << " with " << r.open_neighbours << " neighbours" << endl;
+	}
+
+	return articulation_results.begin()->move;
 }
 
 map<Move, int> calculate_move_areas(GameState const& state, Moves const& moves) {
@@ -624,100 +664,130 @@ Move get_move(GameState const& state) {
 	// Convenience variable
 	Moves pre_filtered;
 
-	// Remove any moves that would cause us a guaranteed loss (wall collisions and body collisions)
+	// region Hard filter remove collisions with walls (guaranteed loss)
 	filter_wall_collisions(state, moves);
 	{
 		auto chosen = check_last_resorts(moves);
 		if (chosen != Move::None) return chosen;
 	}
+	// endregion
 
+	// region Hard filter collisions with snake bodies (guaranteed loss)
 	filter_body_collisions(state, moves);
 	{
 		auto chosen = check_last_resorts(moves);
 		if (chosen != Move::None) return chosen;
 	}
+	// endregion
 
-	// Filter out head collisions
-	// If all we have remaining are head collisions, though, just ignore them!
-	// TODO: Probabilistically choose the most likely to be empty?
-	pre_filtered = moves;
-	filter_possible_head_collisions(state, moves);
-	if (moves.empty()) {
-		cout << "Filtered out all moves with possible head collisions, so ignoring them..." << endl;
-		moves = pre_filtered;
-	}
+	// There's no food, so position strategically (Tron snake variant)
+	if (state.food.empty()) {
+		cout << "There's no food, so we're behaving like a TRON snake" << endl;
 
-	// Don't knowingly enter areas that we can't fit into
-	pre_filtered = moves;
-	auto move_areas = calculate_move_areas(state, moves);
-	filter_inadequate_areas(state, move_areas, moves);
-	if (moves.empty()) {
-		cout << "Don't have enough room to move, stalling..." << endl;
+		auto v = voronoi(state);
+		draw_voronoi(v);
+
+		// PHASE 1 - We're in the same connected area as our opponent, so play for position
+		if (false) {
+
+		}
+		// PHASE 2 - We're in a separate area from our opponent, so just space fill...
+		else {
 //		return space_fill_move_by_area(move_areas);
-		return space_fill_by_heuristic(state, pre_filtered);
+			return space_fill_by_heuristic(state, moves);
+		}
 	}
-
-	// Calculate best-case distance to food for each move remaining
-	// We'll use this for several calculations
-	map<Move, int> move_food_dists;
-	for (auto const& m : moves) {
-		move_food_dists[m] = min_dist_to_food(rel_coord(state.me.head(), m), state);
-	}
-
-	// Strongly prefer to not move farther away from food than our health allows,
-	// but we can hope that another snake eats food and the new food regenerates closer to us
-	{
-		Moves pre = moves;
-		filter_starvation(state, move_food_dists, moves);
-
-		// We have no good options (very likely to die, but tiny chance of something else...)
+	// There's food available, so strategize (Normal variant)
+	else {
+		// region Soft filter head collisions - if all we have remaining are head collisions, though, just ignore them!
+		// TODO: Probabilistically choose the most likely to be empty?
+		pre_filtered = moves;
+		filter_possible_head_collisions(state, moves);
 		if (moves.empty()) {
-			cout << "We'll starve no matter which move we make, so picking a random one..." << endl;
-			return random_move(pre);
+			cout << "Filtered out all moves with possible head collisions, so ignoring them..." << endl;
+			moves = pre_filtered;
 		}
-		// We only have one possible move, so do it
-		else if (moves.size() == 1) {
-			cout << "Only one move to avoid starvation, so using it!" << endl;
-			return *moves.begin();
+		// endregion
+
+		// region Soft filter entering areas we can't fit into
+		pre_filtered = moves;
+		auto move_areas = calculate_move_areas(state, moves);
+		filter_inadequate_areas(state, move_areas, moves);
+		if (moves.empty()) {
+			cout << "Filtered out all moves with inadequate move areas, so ignoring them..." << endl;
+			moves = pre_filtered;
 		}
-	}
+		// endregion
 
-	// We have a list of moves to choose from...
-
-	// If we're the longest snake with the most health...
-	if (is_longest_snake(state.me, state) && is_healthiest_snake(state.me, state)) {
-		cout << "We are in great shape... longest and healthiest" << endl;
-
-		cout << "Targeting keeping a tight body" << endl;
-		auto tight_body_move = get_tight_body_move(state, moves, move_food_dists);
-		if (tight_body_move != Move::None) {
-			cout << "Using a tight body move we found!" << endl;
-			return tight_body_move;
-		} else {
-			cout << "No improvement in fatness move found, so choosing random move!" << endl;
-			return random_move(moves);
+		// region Calculate best-case distance to food for each move remaining
+		// We'll use this for several calculations
+		map<Move, int> move_food_dists;
+		for (auto const& m : moves) {
+			move_food_dists[m] = min_dist_to_food(rel_coord(state.me.head(), m), state);
 		}
-	} else {
-		cout << "We are not longest and healthiest, so targeting food!" << endl;
+		// endregion
 
-		int min_dist = INT_MAX;
-		Moves food_moves;
-		for (pair<Move, int> const& pr : move_food_dists) {
-			if (pr.second < min_dist) {
-				food_moves.clear();
-				food_moves.insert(pr.first);
-				min_dist = pr.second;
-			} else if (pr.second == min_dist) {
-				food_moves.insert(pr.first);
+		// region Strongly prefer to not move farther away from food than our health allows,
+		// but we can hope that another snake eats food and the new food regenerates closer to us
+		{
+			Moves pre = moves;
+			filter_starvation(state, move_food_dists, moves);
+
+			// We have no good options (very likely to die, but tiny chance of something else...)
+			if (moves.empty()) {
+				cout << "We'll starve no matter which move we make, so picking a random one..." << endl;
+				return random_move(pre);
+			}
+				// We only have one possible move, so do it
+			else if (moves.size() == 1) {
+				cout << "Only one move to avoid starvation, so using it!" << endl;
+				return *moves.begin();
 			}
 		}
+		// endregion
 
-		if (food_moves.size() == 1) {
-			cout << "Chose single best food move" << endl;
-			return *food_moves.begin();
+		// We have a list of moves to choose from...
+
+		// If we're the longest snake with the most health...
+		if (is_longest_snake(state.me, state) && is_healthiest_snake(state.me, state)) {
+			cout << "We are in great shape... longest and healthiest" << endl;
+
+			cout << "Targeting keeping a tight body" << endl;
+
+			// region Target tight body
+			auto tight_body_move = get_tight_body_move(state, moves, move_food_dists);
+			if (tight_body_move != Move::None) {
+				cout << "Using a tight body move we found!" << endl;
+				return tight_body_move;
+			} else {
+				cout << "No improvement in fatness move found, so choosing random move!" << endl;
+				return random_move(moves);
+			}
+			// endregion
 		} else {
-			cout << "Chose random best food move" << endl;
-			return random_move(food_moves);
+			cout << "We are not longest and healthiest, so targeting food!" << endl;
+
+			// region Target food
+			int min_dist = INT_MAX;
+			Moves food_moves;
+			for (pair<Move, int> const& pr : move_food_dists) {
+				if (pr.second < min_dist) {
+					food_moves.clear();
+					food_moves.insert(pr.first);
+					min_dist = pr.second;
+				} else if (pr.second == min_dist) {
+					food_moves.insert(pr.first);
+				}
+			}
+
+			if (food_moves.size() == 1) {
+				cout << "Chose single best food move" << endl;
+				return *food_moves.begin();
+			} else {
+				cout << "Chose random best food move" << endl;
+				return random_move(food_moves);
+			}
+			// endregion
 		}
 	}
 }
@@ -764,146 +834,6 @@ GameState process_state(json const& j) {
 	return state;
 }
 
-struct SnakeCoord {
-	Coord c;       // The current coordinate
-	int snake_idx; // Index of snake in game state
-	Coords path;   // Path taken to get to this coord
-};
-
-// Start filling from each snake head
-// Reduce counter on each iteration to account for tail movement
-// Track optimal paths to get to each square per-snake
-Voronoi voronoi(GameState const& state) {
-	Voronoi v;
-	v.board = Board(state.rows, state.cols);
-
-	deque<SnakeCoord> accessible;
-
-	int i = 0;
-	for (auto const& s : state.snakes) {
-		SnakeBoard sb;
-		sb.head = s.head();
-		sb.board = state.board;
-		sb.dists = Board(state.rows, state.cols);
-		sb.tracks.resize(state.rows);
-		for (auto& track : sb.tracks) track.resize(state.cols);
-		v.snake_boards.push_back(sb);
-
-		SnakeCoord sc;
-		sc.snake_idx = i++;
-		sc.c = sb.head;
-		accessible.push_back(sc);
-
-		// We mark squares as visited when they get pushed onto the queue (so we don't add them multiple times)
-		// But we do have to mark the start positions since we manually add them to the queue
-		set_flag(sb.dists, sc.c, OccupierFlag::Visited);
-	}
-
-	// Number of turns it took to get here -- we're starting at heads, so it takes 0 turns to get here
-	int level = 0;
-
-	// Process a single "turn move" (one degree of flower fill from everything at this "level")
-	while (!accessible.empty()) {
-		deque<SnakeCoord> next_level;
-
-		// Reduce all board counts so we account for tail movement
-		for (auto& sb : v.snake_boards)
-			stepdown_counter(sb.board);
-
-//		for (auto const& sc : accessible)
-//			cout << "Accessible " << sc.c << endl;
-
-		// Process each point in the current level
-		while (!accessible.empty()) {
-			auto sc = accessible.front();
-			accessible.pop_front();
-
-			// Mark the number of turns it took to get here for the given snake
-			auto& sb = v.snake_boards[sc.snake_idx];
-
-			// Mark how many turns it took *this snake* to get here
-			set_counter(sb.dists, sc.c, level);
-
-			// Mark the path that we took to get here
-			sb.tracks[sc.c.row][sc.c.col] = sc.path;
-
-			// Try out neighbours...
-			for (auto const& m : AllMoves) {
-				auto rel = rel_coord(sc.c, m);
-
-				// Add to the queue for the next "level" if the point hasn't been visited by *this* snake
-				// Not visited and in bounds and not occupied by an existing snake
-				if (!in_bounds(rel, state)) continue;
-				if (get_flag(sb.dists, rel, OccupierFlag::Visited)) continue;
-				if (get_flag(sb.board, rel, OccupierFlag::Player)) continue;
-
-				SnakeCoord next;
-				next.snake_idx = sc.snake_idx;
-				next.c = rel;
-				next.path = sc.path;
-				next.path.push_back(sc.c);
-
-//				cout << "Added " << rel << endl;
-
-				next_level.push_back(next);
-
-				// Mark as visited so that we don't add the same coordinate within the inner loop
-				set_flag(sb.dists, next.c, OccupierFlag::Visited);
-			}
-		}
-
-		// Assign the next level of points to examine
-		accessible = next_level;
-
-		++level;
-	}
-
-	// Set up the final Voronoi board as the minimums for each snake board
-	// If there's a tie, set Unowned (but still a minimum distance)
-	uint8_t snake_count = state.snakes.size();
-
-	for (int i = 0; i < state.rows; ++i) {
-		for (int j = 0; j < state.cols; ++j) {
-
-			// Go through all snake boards to find minimum
-			int min_dist = INT_MAX;
-			vector<uint8_t> owners;
-
-			for (uint8_t s = 0; s < snake_count; ++s) {
-				auto dist = get_counter(v.snake_boards[s].dists, i, j);
-
-				// Only want to count the distance as valid if the snake actually visited
-				if (!get_flag(v.snake_boards[s].dists, i, j, OccupierFlag::Visited)) continue;
-				if (dist > min_dist) continue;
-
-				if (dist < min_dist) {
-					owners.clear();
-					min_dist = dist;
-				}
-				owners.push_back(s);
-			}
-
-			set_counter(v.board, i, j, min_dist);
-
-			  // No snake has access to this square
-			if (owners.empty()) {
-				set_owner(v.board, i, j, Unowned);
-				set_flag(v.board, i, j, OccupierFlag::Inaccessible);
-			}
-				// One snake has a fastest path to this square
-			else if (owners.size() == 1) {
-				set_owner(v.board, i, j, *owners.begin());
-			}
-				// Multiple snakes can get to the same spot at the same time
-			else {
-				set_owner(v.board, i, j, Unowned);
-			}
-		}
-	}
-
-	return v;
-}
-
 void server(int port) {
 	Server server;
 
@@ -942,9 +872,6 @@ void server(int port) {
 
 		auto state = process_state(j_in);
 		draw(state);
-
-		auto v = voronoi(state);
-		draw_voronoi(v);
 
 //		auto ccs = connected_areas(state);
 //		draw_labels(ccs.first);

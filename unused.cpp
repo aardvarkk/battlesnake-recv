@@ -1,3 +1,6 @@
+const int SIM_ROWS = 20;
+const int SIM_COLS = 20;
+
 void add_snake(GameState& state, Coord const& c, int length, int food) {
 //  int idx = state.heads.size();
 //  state.heads.push_back(c);

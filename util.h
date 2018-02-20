@@ -30,12 +30,12 @@ inline bool get_is_empty(Board const& board, Coord const& c) {
 	return !(board[c.row][c.col] & 0x000000FF);
 }
 
-inline bool get_is_enterable(Board const& board, Coord const& c) {
-	return (board[c.row][c.col] & 0x000000FF) != OccupierFlag::Player;
+inline bool get_is_enterable(Board const& board, int row, int col) {
+	return !(board[row][col] & (OccupierFlag::Player | OccupierFlag::Inaccessible));
 }
 
-inline bool get_is_enterable(Board const& board, int row, int col) {
-	return (board[row][col] & 0x000000FF) != OccupierFlag::Player;
+inline bool get_is_enterable(Board const& board, Coord const& c) {
+	return get_is_enterable(board, c.row, c.col);
 }
 
 inline void clear_flag(Board& board, Coord const& c, int flag) {
@@ -101,16 +101,24 @@ inline int taxicab_dist(Coord const& a, Coord const& b) {
 	return abs(a.row - b.row) + abs(a.col - b.col);
 }
 
-inline bool in_bounds(int row, int col, GameState const& state) {
+inline bool in_bounds(int row, int col, int rows, int cols) {
 	if (row < 0) return false;
 	if (col < 0) return false;
-	if (row >= state.rows) return false;
-	if (col >= state.cols) return false;
+	if (row >= rows) return false;
+	if (col >= cols) return false;
 	return true;
+}
+
+inline bool in_bounds(int row, int col, GameState const& state) {
+	return in_bounds(row, col, state.rows, state.cols);
 }
 
 inline bool in_bounds(Coord const& a, GameState const& state) {
 	return in_bounds(a.row, a.col, state);
+}
+
+inline bool in_bounds(Coord const& a, int rows, int cols) {
+	return in_bounds(a.row, a.col, rows, cols);
 }
 
 inline bool are_neighbours(Coord const& a, Coord const& b) {
