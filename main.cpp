@@ -576,7 +576,7 @@ bool is_articulation(Board const& board, LabelledBoard const& base, Coord const&
 
 	// Calculate connected components
 	auto cas = connected_areas(board_copy);
-	draw_labels(cas.first);
+//	draw_labels(cas.first);
 
 	// Check all neighbours of the coord
 	// If we've changed any area indices (neighbours have been renumbered) then this was an articulation point
@@ -657,6 +657,30 @@ void filter_inadequate_areas(GameState const& state, map<Move, int> const& move_
 	moves = filtered;
 }
 
+bool alone(GameState const& state) {
+	// If any of our accessible neighbours are accessible by another snake, we're not alone
+	set<int> our_areas, their_areas;
+
+	auto cca = connected_areas(state.board);
+
+	for (auto const& snake : state.snakes) {
+		auto& accessible_areas = snake.id == state.my_id ? our_areas : their_areas;
+		for (auto const& m : AllMoves) {
+			auto n = rel_coord(snake.head(), m);
+			if (in_bounds(n, state) && get_flag(cca.first, n, OccupierFlag::Accessible))
+				accessible_areas.insert(get_owner(cca.first, n));
+		}
+	}
+
+	set<int> intersect_areas;
+	set_intersection(our_areas.begin(), our_areas.end(),
+									 their_areas.begin(), their_areas.end(),
+									 inserter(intersect_areas, intersect_areas.begin())
+	);
+
+	return intersect_areas.empty();
+}
+
 Move get_move(GameState const& state) {
 	// Start by considering all possible moves
 	Moves moves = AllMoves;
@@ -688,11 +712,13 @@ Move get_move(GameState const& state) {
 		draw_voronoi(v);
 
 		// PHASE 1 - We're in the same connected area as our opponent, so play for position
-		if (false) {
-
+		if (!alone(state)) {
+			cout << "We're not alone! Strategize!" << endl;
+			return space_fill_by_heuristic(state, moves);
 		}
 		// PHASE 2 - We're in a separate area from our opponent, so just space fill...
 		else {
+			cout << "We're alone, so we'll space fill by heuristic (avoiding cut vertices)" << endl;
 //		return space_fill_move_by_area(move_areas);
 			return space_fill_by_heuristic(state, moves);
 		}
