@@ -397,32 +397,6 @@ Move get_tight_body_move(
 	}
 }
 
-// Go through given move areas and pick the one with the most area
-Move space_fill_move_by_area(map<Move, int> const& move_areas) {
-	int max_area = 0;
-	Moves choosable;
-	choosable.insert(Move::None);
-	for (pair<Move, int> const& pr : move_areas) {
-		if (pr.second > max_area) {
-			max_area = pr.second;
-			choosable.clear();
-			choosable.insert(pr.first);
-			cout << "Found better case of area " << max_area << " if we move " << move_str(pr.first) << endl;
-		} else if (pr.second == max_area) {
-			cout << "Tie for best area if we move " << move_str(pr.first) << endl;
-			choosable.insert(pr.first);
-		}
-	}
-
-	if (choosable.size() == 1) {
-		cout << "Only one space fill move by area -- choosing it!" << endl;
-		return *choosable.begin();
-	} else {
-		cout << "Multiple moves have area for space fill, so choosing randomly" << endl;
-		return random_move(choosable);
-	}
-}
-
 // Return a labelled board along with labels of the different areas
 // https://en.wikipedia.org/wiki/Connected-component_labeling
 pair< LabelledBoard, vector<Coords> > connected_areas(Board const& board) {
@@ -714,12 +688,11 @@ Move get_move(GameState const& state) {
 		// PHASE 1 - We're in the same connected area as our opponent, so play for position
 		if (!alone(state)) {
 			cout << "We're not alone! Strategize!" << endl;
-			return space_fill_by_heuristic(state, moves);
+			return random_move(moves);
 		}
 		// PHASE 2 - We're in a separate area from our opponent, so just space fill...
 		else {
 			cout << "We're alone, so we'll space fill by heuristic (avoiding cut vertices)" << endl;
-//		return space_fill_move_by_area(move_areas);
 			return space_fill_by_heuristic(state, moves);
 		}
 	}
