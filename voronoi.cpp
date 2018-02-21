@@ -1,6 +1,7 @@
 #include "voronoi.h"
 #include "util.h"
 
+#include <climits>
 #include <deque>
 
 using namespace std;
