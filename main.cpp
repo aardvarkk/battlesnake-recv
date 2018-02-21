@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cfloat>
 #include <climits>
 #include <iomanip>
 #include <iostream>
@@ -416,14 +417,14 @@ pair< LabelledBoard, vector<Coords> > connected_areas(Board const& board) {
 
 			int north_neighbour_label = INT_MAX;
 			int west_neighbour_label = INT_MAX;
-			int min_neighbour_label = INT_MAX;
+
 			if (i > 0) {
 				north_neighbour_label = lb[i - 1][j];
 			}
 			if (j > 0) {
 				west_neighbour_label = lb[i][j - 1];
 			}
-			min_neighbour_label = min(north_neighbour_label, west_neighbour_label);
+			int min_neighbour_label = min(north_neighbour_label, west_neighbour_label);
 
 			if (min_neighbour_label < INT_MAX) {
 				if (north_neighbour_label < INT_MAX && north_neighbour_label != min_neighbour_label) {
@@ -533,15 +534,15 @@ void possible_articulation_points(GameState const& state, LabelledBoard& lb) {
 	}
 }
 
-struct ArticulationResult {
-	ArticulationResult() : articulation(false), containing_area(0), open_neighbours(0) {}
+struct NeighbourResult {
+	NeighbourResult() : articulation(false), containing_area(0), open_neighbours(0) {}
 	Move move;
 	bool articulation;
 	int containing_area;
 	int open_neighbours;
 };
 
-bool is_articulation(Board const& board, LabelledBoard const& base, Coord const& c) {
+bool is_articulation(Board const& board, vector<Coords> const& base, Coord const& c) {
 	// Copy the board
 	Board board_copy = board;
 
@@ -552,16 +553,8 @@ bool is_articulation(Board const& board, LabelledBoard const& base, Coord const&
 	auto cas = connected_areas(board_copy);
 //	draw_labels(cas.first);
 
-	// Check all neighbours of the coord
-	// If we've changed any area indices (neighbours have been renumbered) then this was an articulation point
-	for (auto const& m : AllMoves) {
-		auto n = rel_coord(c, m);
-		if (in_bounds(n, base.size(), base.front().size()) &&
-			get_owner(base, n) != get_owner(cas.first, n))
-			return true;
-	}
-
-	return false;
+	// Has the number of connected components changed? If so, it's an articulation point!
+	return cas.second.size() != base.size();
 }
 
 // Take the move whose destination has the fewest number of neighbours
@@ -570,15 +563,15 @@ Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
 	// Go through each connected area (graph) and find articulation points
 	auto ccs = connected_areas(state.board);
 //	possible_articulation_points(state, ccs.first);
-//	draw_labels(ccs.first);
+	draw_labels(ccs.first);
 
 	// Accessible areas for different moves
-	vector<ArticulationResult> articulation_results;
+	vector<NeighbourResult> neighbour_results;
 
 	for (auto const& m : moves) {
 		auto target = rel_coord(state.me.head(), m);
 
-		ArticulationResult res;
+		NeighbourResult res;
 		for (auto const& nm : AllMoves) {
 			auto n = rel_coord(target, nm);
 			if (in_bounds(n, state) && get_is_enterable(state.board, n))
@@ -586,14 +579,15 @@ Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
 		}
 
 		res.move = m;
-		res.articulation = is_articulation(state.board, ccs.first, target);
-		res.containing_area = ccs.second[get_counter(ccs.first, target)].size();
-		articulation_results.push_back(res);
+		res.articulation = is_articulation(state.board, ccs.second, target);
+		res.containing_area = ccs.second[get_owner(ccs.first, target)].size();
+
+		neighbour_results.push_back(res);
 	}
 
 	// Sort first by articulation points (don't want to take them!), and then by resulting area (want max!)
-	sort(articulation_results.begin(), articulation_results.end(),
-			 [](ArticulationResult const& a, ArticulationResult const& b) {
+	sort(neighbour_results.begin(), neighbour_results.end(),
+			 [](NeighbourResult const& a, NeighbourResult const& b) {
 				 if (!a.articulation && b.articulation) return true;
 				 else if (a.articulation && !b.articulation) return false;
 				 else if (a.containing_area != b.containing_area) return a.containing_area > b.containing_area;
@@ -601,11 +595,11 @@ Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
 	});
 
 	cout << "Sorted space fill results" << endl;
-	for (auto const& r : articulation_results) {
+	for (auto const& r : neighbour_results) {
 		cout << move_str(r.move) << " articulation " << r.articulation << " in area " << r.containing_area << " with " << r.open_neighbours << " neighbours" << endl;
 	}
 
-	return articulation_results.begin()->move;
+	return neighbour_results.begin()->move;
 }
 
 map<Move, int> calculate_move_areas(GameState const& state, Moves const& moves) {
@@ -655,6 +649,77 @@ bool alone(GameState const& state) {
 	return intersect_areas.empty();
 }
 
+// Only look one move ahead to see which move gives us best area access
+Move greedy_max_control_area(GameState const& state, Moves const& moves) {
+	int best_access_area = 0;
+	int best_first_area = 0;
+	float best_avg_turns = FLT_MAX;
+	set<Move> best_moves;
+
+	cout << "Greedily chosing move based on control area" << endl;
+
+	for (auto const& m : moves) {
+
+		// Simulate moving to the point
+		auto state_copy = state;
+		auto rel = rel_coord(state_copy.me.head(), m);
+		state_copy.snakes[state_copy.me.idx].coords.push_front(rel);
+		set_owner(state_copy.board, rel, state_copy.me.idx);
+		set_flag(state_copy.board, rel, OccupierFlag::Player);
+
+		// Calculate Voronoi result
+		auto v = voronoi(state_copy);
+
+		int access_area = v.snake_boards[state_copy.me.idx].access_area;
+		int first_area  = v.snake_boards[state_copy.me.idx].first_area;
+		float avg_turns = v.snake_boards[state_copy.me.idx].avg_turns;
+
+		// TODO: Can probably be more clever about this...
+
+		// Priority 1 -- keep access to as much area as possible (whether first or not)
+		if (access_area > best_access_area) {
+			best_moves.clear();
+			best_moves.insert(m);
+			best_access_area = access_area;
+			best_first_area = first_area;
+			best_avg_turns = avg_turns;
+
+			cout << "Found best access area of " << best_access_area << " when moving " << move_str(m) << endl;
+		} else if (access_area == best_access_area) {
+
+			// Priority 2 -- keep access to as much first area as possible
+			if (first_area > best_first_area) {
+				best_moves.clear();
+				best_moves.insert(m);
+				best_first_area = first_area;
+				best_avg_turns = avg_turns;
+
+				cout << "Found better first area of " << best_first_area << " when moving " << move_str(m) << endl;
+			} else if (first_area == best_first_area) {
+
+				// Priority 3 -- keep average number of turns as low as possible
+				if (avg_turns < best_avg_turns) {
+					best_moves.clear();
+					best_moves.insert(m);
+					best_avg_turns = avg_turns;
+
+					cout << "Found better avg turns of " << best_avg_turns << " when moving " << move_str(m) << endl;
+				}
+			}
+		}
+	}
+
+	Move chosen;
+	if (best_moves.size() == 1) {
+		chosen = *best_moves.begin();
+		cout << "One best option of " << move_str(chosen) << endl;
+	} else {
+		chosen = random_move(best_moves);
+		cout << "Moving " << move_str(chosen) << " as chosen randomly from " << best_moves.size() << " best options" << endl;
+	}
+	return chosen;
+}
+
 Move get_move(GameState const& state) {
 	// Start by considering all possible moves
 	Moves moves = AllMoves;
@@ -688,7 +753,15 @@ Move get_move(GameState const& state) {
 		// PHASE 1 - We're in the same connected area as our opponent, so play for position
 		if (!alone(state)) {
 			cout << "We're not alone! Strategize!" << endl;
-			return random_move(moves);
+
+			// Filter to battlefront points (farthest we can get, guaranteed, before enemies)
+
+			// Check battlefront points to see if any *conclusively* limit opponent area to less than ours
+			// If so, go there!
+
+			// If not, greedily move to point that gives us largest resulting max Voronoi control area
+
+			return greedy_max_control_area(state, moves);
 		}
 		// PHASE 2 - We're in a separate area from our opponent, so just space fill...
 		else {
@@ -794,6 +867,8 @@ Move get_move(GameState const& state) {
 void process_snake(json const& j, uint8_t owner, GameState& state) {
 	Snake s;
 
+	s.idx = owner;
+
 	for (auto jc : j.at("body").at("data")) {
 		Coord c(jc.at("y"), jc.at("x"));
 		s.coords.push_back(c);
@@ -822,11 +897,12 @@ GameState process_state(json const& j) {
 	}
 
 	state.snakes.clear();
+	state.my_id = j.at("you").at("id");
+
 	uint8_t owner = 0;
 	for (auto const& s : j.at("snakes").at("data")) {
 		process_snake(s, owner++, state);
 	}
-	state.my_id = j.at("you").at("id");
 
 	state.me = get_snake(state, state.my_id);
 

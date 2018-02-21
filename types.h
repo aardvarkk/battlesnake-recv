@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <iostream>
 #include <map>
 #include <set>
@@ -67,7 +68,7 @@ struct Coord {
 };
 
 typedef std::set<Coord>    UniqCoords;
-typedef std::vector<Coord> Coords;
+typedef std::deque<Coord>  Coords;
 
 inline std::ostream& operator<<(std::ostream& os, const Coord& c)
 {
@@ -85,10 +86,14 @@ const std::set<Move> AllMoves = {
 };
 
 struct Snake {
-	Snake() = default;
-	Coords coords;
+	Snake() : health(0), idx(0) {};
+
 	int health; // How much food each snake has remaining
+	int idx; // Index in snake array
+
+	Coords coords;
 	std::string id;
+
 	Coord head() const { return coords.front(); }
 	Coord tail() const { return coords.back(); }
 	int length() const { return coords.size(); }
@@ -111,6 +116,7 @@ struct GameState {
 	int rows, cols;
 	Board board; // Board state
 	std::string my_id;
+	int my_idx;
 	Snake me;
 	std::vector<Snake> snakes;
 	Coords food;
@@ -119,15 +125,3 @@ struct GameState {
 typedef std::map<std::string, GameState> GameStates;
 
 typedef std::vector< std::vector<Coords> > Tracks;
-
-struct SnakeBoard {
-	Coord head; // starting location for this snake
-	Board dists; // counter is minimum distance for snake to get to each board square
-	Board board; // counter is snake length for other snakes on the board
-	Tracks tracks; // possible path to get to each of the squares on the board in min turns
-};
-
-struct Voronoi {
-	Board board; // Overall board showing min distance to each point
-	std::vector<SnakeBoard> snake_boards; // Boards showing distance to each square per-snake
-};

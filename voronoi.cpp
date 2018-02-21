@@ -5,6 +5,12 @@
 
 using namespace std;
 
+struct SnakeCoord {
+	Coord c;       // The current coordinate
+	int snake_idx; // Index of snake in game state
+	Coords path;   // Path taken to get to this coord
+};
+
 // Start filling from each snake head
 // Reduce counter on each iteration to account for tail movement
 // Track optimal paths to get to each square per-snake
@@ -58,6 +64,8 @@ Voronoi voronoi(GameState const& state) {
 
 			// Mark how many turns it took *this snake* to get here
 			set_counter(sb.dists, sc.c, level);
+			sb.access_area++;
+			sb.avg_turns += level;
 
 			// Mark the path that we took to get here
 			sb.tracks[sc.c.row][sc.c.col] = sc.path;
@@ -127,13 +135,21 @@ Voronoi voronoi(GameState const& state) {
 			}
 				// One snake has a fastest path to this square
 			else if (owners.size() == 1) {
-				set_owner(v.board, i, j, *owners.begin());
+				int idx = *owners.begin();
+				set_owner(v.board, i, j, idx);
+				v.snake_boards[idx].first_area++;
 			}
 				// Multiple snakes can get to the same spot at the same time
 			else {
 				set_owner(v.board, i, j, Unowned);
 			}
 		}
+	}
+
+	// Post-process the stats for the snakes
+	for (auto& sb : v.snake_boards) {
+		if (sb.access_area > 0)
+			sb.avg_turns /= sb.access_area;
 	}
 
 	return v;
