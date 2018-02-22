@@ -96,11 +96,11 @@ struct Snake {
 
 	Coord head() const { return coords.front(); }
 	Coord tail() const { return coords.back(); }
-	int length() const { return coords.size(); }
+	int length() const { return static_cast<int>(coords.size()); }
 	int drawn_length() const {
 		UniqCoords uniq;
 		for (auto const& c : coords) uniq.insert(c);
-		return uniq.size();
+		return static_cast<int>(uniq.size());
 	}
 };
 
