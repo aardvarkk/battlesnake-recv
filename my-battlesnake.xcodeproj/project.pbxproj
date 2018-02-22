@@ -242,6 +242,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				HEADER_SEARCH_PATHS = (
+					argh,
 					"cpp-httplib",
 					json/include,
 				);
@@ -254,6 +255,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				HEADER_SEARCH_PATHS = (
+					argh,
 					"cpp-httplib",
 					json/include,
 				);

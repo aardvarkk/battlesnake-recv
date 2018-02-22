@@ -88,11 +88,13 @@ using namespace httplib;
 #include "nlohmann/json.hpp"
 using json = nlohmann::json;
 
+#include "argh.h"
 #include "draw.h"
 #include "util.h"
 #include "voronoi.h"
 
 default_random_engine _rng;
+bool draw_enabled;
 
 Snake get_snake(GameState const& state, string const& id) {
 	for (auto const& s : state.snakes) {
@@ -563,7 +565,7 @@ Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
 	// Go through each connected area (graph) and find articulation points
 	auto ccs = connected_areas(state.board);
 //	possible_articulation_points(state, ccs.first);
-	draw_labels(ccs.first);
+	if (draw_enabled) draw_labels(ccs.first);
 
 	// Accessible areas for different moves
 	vector<NeighbourResult> neighbour_results;
@@ -748,7 +750,7 @@ Move get_move(GameState const& state) {
 		cout << "There's no food, so we're behaving like a TRON snake" << endl;
 
 		auto v = voronoi(state);
-		draw_voronoi(v);
+		if (draw_enabled) draw_voronoi(v);
 
 		// PHASE 1 - We're in the same connected area as our opponent, so play for position
 		if (!alone(state)) {
@@ -946,7 +948,7 @@ void server(int port) {
 //		cout << j_in.dump(2) << endl;
 
 		auto state = process_state(j_in);
-		draw(state);
+		if (draw_enabled) draw(state);
 
 //		auto ccs = connected_areas(state);
 //		draw_labels(ccs.first);
@@ -970,16 +972,13 @@ void server(int port) {
 }
 
 int main(int argc, const char* argv[]) {
-//	rlimit rl;
-//	getrlimit(RLIMIT_STACK, &rl);
-//	rl.rlim_cur = rl.rlim_max;
-//	setrlimit(RLIMIT_STACK, &rl);
+    int port;
 
-	int port = 5000;
-	if (argc > 1) {
-		stringstream ss(argv[1]);
-		ss >> port;
-	}
-	server(port);
+    Argh argh;
+    argh.addFlag(draw_enabled, "--draw", "Enable drawing");
+    argh.addOption<int>(port, 5000, "-p", "Port to use");
+    argh.parse(argc, argv);
+
+    server(port);
 	return 0;
 }
