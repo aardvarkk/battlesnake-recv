@@ -19,7 +19,8 @@ Voronoi voronoi(GameState const& state) {
 	Voronoi v;
 	v.board = Board(state.rows, state.cols);
 
-	deque<SnakeCoord> accessible;
+	vector<SnakeCoord> accessible;
+	accessible.reserve(state.snakes.size() * state.rows * state.cols);
 
 	int i = 0;
 	for (auto const& s : state.snakes) {
@@ -46,7 +47,7 @@ Voronoi voronoi(GameState const& state) {
 
 	// Process a single "turn move" (one degree of flower fill from everything at this "level")
 	while (!accessible.empty()) {
-		deque<SnakeCoord> next_level;
+		vector<SnakeCoord> next_level;
 
 		// Reduce all board counts so we account for tail movement
 		for (auto& sb : v.snake_boards)
@@ -57,8 +58,8 @@ Voronoi voronoi(GameState const& state) {
 
 		// Process each point in the current level
 		while (!accessible.empty()) {
-			auto sc = accessible.front();
-			accessible.pop_front();
+			auto sc = accessible.back();
+			accessible.pop_back();
 
 			// Mark the number of turns it took to get here for the given snake
 			auto& sb = v.snake_boards[sc.snake_idx];
