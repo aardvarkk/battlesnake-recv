@@ -2,6 +2,7 @@ g++ -std=c++11 main.cpp && ./a.out
 
 SERVER
 
+brew install elm
 mix deps.get
 mix ecto.create
 mix ecto.migrate
