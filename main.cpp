@@ -257,7 +257,7 @@ void filter_starvation(
 {
 	Moves filtered;
 	bool clear_path_exists = false;
-	for (pair<Move, int> const& pr : move_food_dists) {
+	for (auto const& pr : move_food_dists) {
 		if (pr.second < INT_MAX) {
 			clear_path_exists = true;
 		}
@@ -580,7 +580,7 @@ Move space_fill_by_heuristic(GameState const& state, Moves const& moves) {
 
 		res.move = m;
 		res.articulation = is_articulation(state.board, ccs.second, target);
-		res.containing_area = ccs.second[get_owner(ccs.first, target)].size();
+		res.containing_area = static_cast<int>(ccs.second[get_owner(ccs.first, target)].size());
 
 		neighbour_results.push_back(res);
 	}
@@ -842,7 +842,7 @@ Move get_move(GameState const& state) {
 			// region Target food
 			int min_dist = INT_MAX;
 			Moves food_moves;
-			for (pair<Move, int> const& pr : move_food_dists) {
+			for (auto const& pr : move_food_dists) {
 				if (pr.second < min_dist) {
 					food_moves.clear();
 					food_moves.insert(pr.first);
