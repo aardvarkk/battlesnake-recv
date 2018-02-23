@@ -1,1 +1,1 @@
-web: ./my-battlesnake -p $PORT
+web: ./battlesnake-recv -p $PORT
