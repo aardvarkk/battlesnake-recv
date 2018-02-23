@@ -1,1 +1,1 @@
-web: ./my-battlesnake $PORT
+web: ./my-battlesnake -p $PORT
