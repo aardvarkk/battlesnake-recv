@@ -6,4 +6,4 @@
 	url = https://github.com/aardvarkk/json.git
 [submodule "argh"]
 	path = argh
-	url = git@github.com:aardvarkk/argh.git
+	url = https://github.com/aardvarkk/argh.git
