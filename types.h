@@ -76,15 +76,6 @@ inline std::ostream& operator<<(std::ostream& os, const Coord& c)
 	return os;
 }
 
-enum class Move {
-	Up, Down, Left, Right, None
-};
-typedef std::set<Move> Moves;
-
-const std::set<Move> AllMoves = {
-	Move::Up, Move::Down, Move::Left, Move::Right
-};
-
 struct Snake {
 	Snake() : health(0), idx(0) {};
 

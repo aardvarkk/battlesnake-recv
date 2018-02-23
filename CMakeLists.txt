@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
-project(my-battlesnake)
+project(battlesnake-recv)
 
 set(CMAKE_CXX_STANDARD 17)
 
 find_package(Threads REQUIRED)
 
-add_executable(my-battlesnake main.cpp draw.cpp voronoi.cpp)
-target_include_directories (my-battlesnake PUBLIC json/include)
-target_include_directories (my-battlesnake PUBLIC cpp-httplib)
-target_include_directories (my-battlesnake PUBLIC argh)
-target_link_libraries(my-battlesnake Threads::Threads)
+add_executable(battlesnake-recv main.cpp)
+target_include_directories (battlesnake-recv PUBLIC json/include)
+target_include_directories (battlesnake-recv PUBLIC cpp-httplib)
+target_include_directories (battlesnake-recv PUBLIC argh)
+target_link_libraries(battlesnake-recv Threads::Threads)
